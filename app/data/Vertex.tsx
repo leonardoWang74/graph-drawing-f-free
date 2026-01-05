@@ -6,6 +6,8 @@ export interface VertexData {
 
     x: number;
     y: number;
+
+    neighbors: number[];
 }
 
 export class Vertex {
@@ -82,6 +84,14 @@ export class Vertex {
     public static Vertex(position: Vector2): Vertex {
         const vertex = new Vertex();
         vertex.position = position;
+        return vertex;
+    }
+
+    public static VertexFromData(data: VertexData): Vertex {
+        const vertex = new Vertex();
+        vertex.id = data.id;
+        vertex.label = data.label;
+        vertex.position = new Vector2(data.x, data.y);
         return vertex;
     }
 }

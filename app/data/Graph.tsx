@@ -1,8 +1,9 @@
 import Vector2 from "@/app/data/Vector2";
-import {Vertex} from "@/app/data/Vertex";
+import {Vertex, VertexData} from "@/app/data/Vertex";
 import Subsets from "@/app/util/Subsets";
 import {ArrayEquals} from "@/app/util/ArrayUtils";
 import {SortNumberDescending} from "@/app/util/SortUtils";
+import {BijectionsCombination, BijectionsGraph} from "@/app/util/Bijections";
 
 export default class Graph {
     private vertices: Map<number, Vertex> = new Map<number, Vertex>();
@@ -18,12 +19,12 @@ export default class Graph {
         const inducedList: Graph[] = [];
 
         // get degrees of the subgraph (including duplicates): descending
-        const subgraphDegreesDescending = subgraph.getDegreesDescending();
+        const subgraphDegreesDesc = subgraph.getDegreesDescending();
 
         // empty subgraph: return nothing
-        if(subgraphDegreesDescending.length === 0) return inducedList;
+        if(subgraphDegreesDesc.length === 0) return inducedList;
         // largest degree 0 -> every vertex is an induced subgraph
-        if(subgraphDegreesDescending[0] === 0) {
+        if(subgraphDegreesDesc[0] === 0) {
             for(const vertex of this.vertices.values()) {
                 const graph = new Graph();
                 const v = vertex.clone();
@@ -36,14 +37,21 @@ export default class Graph {
 
         // build a map of the degrees in the subgraph
         const subgraphVerticesByDegree: Map<number, Set<Vertex>> = new Map<number, Set<Vertex>>();
+        // build a sorted list of the degrees of the subgraph sorted by lowest first
+        const subgraphDegreeAscByCount: number[] = [];
         for(const vertex of subgraph.vertices.values()) {
             const degree = vertex.degree();
-            if(!subgraphVerticesByDegree.has(degree)) subgraphVerticesByDegree.set(degree, new Set<Vertex>());
+            if(!subgraphVerticesByDegree.has(degree)) {
+                const set = new Set<Vertex>();
+                subgraphVerticesByDegree.set(degree, set);
+                subgraphDegreeAscByCount.push(degree);
+            }
             subgraphVerticesByDegree.get(degree)?.add(vertex);
         }
+        subgraphDegreeAscByCount.sort((a, b) => subgraphVerticesByDegree.get(a)?.size - subgraphVerticesByDegree.get(b)?.size);
 
         // build a map of the degrees in the current graph
-        const graphDegreesDescending: number[] = this.getDegreesDescending(false); // (does not contain duplicates)
+        const graphDegreesDesc: number[] = this.getDegreesDescending(false); // (does not contain duplicates)
         const verticesByDegree: Map<number, Set<Vertex>> = new Map<number, Set<Vertex>>();
         for(const vertex of this.vertices.values()) {
             const degree = vertex.degree();
@@ -52,10 +60,11 @@ export default class Graph {
         }
 
         // empty graph: return nothing
-        if(graphDegreesDescending.length === 0) return inducedList;
+        if(graphDegreesDesc.length === 0) return inducedList;
 
         // starting with the highest degree, find subsets of neighbors we can include
-        this.subgraphSearch(inducedList, subgraph, subgraphDegreesDescending, subgraphVerticesByDegree, graphDegreesDescending, verticesByDegree, []);
+        this.subgraphSearch(inducedList, subgraph, subgraphDegreesDesc, subgraphVerticesByDegree, subgraphDegreeAscByCount,
+            graphDegreesDesc, verticesByDegree, []);
 
         return inducedList;
     }
@@ -63,35 +72,107 @@ export default class Graph {
     private subgraphSearch(
         inducedList: Graph[],
         subgraph: Graph,
-            subgraphDegreesDescending: number[],
+            subgraphDegreesDesc: number[],
             subgraphVerticesByDegree: Map<number, Set<Vertex>>,
-        graphDegreesDescending: number[],
+            subgraphDegreeAscByCount: number[],
+        graphDegreesDesc: number[],
             verticesByDegree: Map<number, Set<Vertex>>,
         foundIDs: number[],
         forbidden: Set<number> = new Set<number>() // cannot add these vertices
     ): void {
-        // found enough vertices - add to preliminary list of subgraph (still have to check bijective mapping)
-        if(foundIDs.length >= subgraphDegreesDescending.length) {
+        // found enough vertices - add to preliminary list of subgraph
+        if(foundIDs.length >= subgraphDegreesDesc.length) {
             // create subgraph
             const subgraphFound = this.getSubgraphArray(foundIDs);
 
             // degrees don't match - discard
-            if(!ArrayEquals(subgraphDegreesDescending, subgraphFound.getDegreesDescending())) return;
+            if(!ArrayEquals(subgraphDegreesDesc, subgraphFound.getDegreesDescending())) return;
 
-            // check if there is a bijective function: for smallest degree
-            throw new Error("not implemented");
+            // check if there is a bijective function: found -> subgraph
+            const bijection : Map<number, number> = new Map<number, number>();
+            const subgraphVerticesUsed : Set<number> = new Set<number>();
 
-            // found a real induced subgraph: add to list
-            inducedList.push(subgraphFound);
+            // get vertices by degree of found subgraph
+            const verticesByDegreeFound: Map<number, Set<Vertex>> = new Map<number, Set<Vertex>>();
+            for(const vertex of subgraphFound.vertices.values()) {
+                const degree = vertex.degree();
+                if(!verticesByDegreeFound.has(degree)) verticesByDegreeFound.set(degree, new Set<Vertex>());
+                verticesByDegreeFound.get(degree)?.add(vertex);
+            }
+
+            // degree <=1 is a clear bijective map: assign any
+            for(let degree=0; degree<=1; ++degree) {
+                const verticesOfDegree = verticesByDegreeFound.get(degree);
+                const subgraphOfDegree = subgraphVerticesByDegree.get(degree);
+                if(!verticesOfDegree || !subgraphOfDegree) continue;
+
+                for(const vFound of verticesOfDegree) {
+                    for(const vSub of subgraphOfDegree) {
+                        if(subgraphVerticesUsed.has(vSub.id)) continue;
+
+                        subgraphVerticesUsed.add(vSub.id);
+                        bijection.set(vFound.id, vSub.id);
+                    }
+                }
+            }
+
+            // otherwise: start with the smallest set (e.g. only 1 vertex with degree 4 -> know which one it has to be)
+            const generators: Generator<Map<number, number>>[] = [];
+            for(const degree of subgraphDegreeAscByCount) {
+                if(degree <= 1) continue;
+                const verticesOfDegree = verticesByDegreeFound.get(degree);
+                const subgraphsOfDegree = subgraphVerticesByDegree.get(degree);
+                if(!verticesOfDegree || !subgraphsOfDegree) continue;
+                if(verticesOfDegree.size === 0 || subgraphsOfDegree.size === 0) continue;
+
+                // unique
+                if(verticesOfDegree.size === 1) {
+                    subgraphVerticesUsed.add(subgraphsOfDegree[0].id);
+                    bijection.set(verticesOfDegree[0].id, subgraphsOfDegree[0].id);
+                    continue;
+                }
+
+                // non-unique: create a generator for the degree
+                const verticesIds: number[] = [];
+                const subgraphIds: number[] = [];
+                for(const v of verticesOfDegree) verticesIds.push(v.id);
+                for(const s of subgraphsOfDegree) subgraphIds.push(s.id);
+                generators.push(BijectionsGraph(subgraphFound, subgraph, verticesIds, subgraphIds));
+            }
+
+            // all unique: already have the mapping
+            if(generators.length === 0) {
+                // check edges fit using the bijection
+                if (this.subgraphCheckEdgesWithBijection(subgraphFound, bijection)) {
+                    // found a real induced subgraph: add to list
+                    inducedList.push(subgraphFound);
+                }
+            }
+            // non-unique: try mappings
+            else {
+                for (const mapping of BijectionsCombination(generators)) {
+                    const fullBijection = new Map(bijection);
+                    for (const [k, v] of mapping) {
+                        fullBijection.set(k, v);
+                    }
+
+                    // check edges fit using the bijection
+                    if (this.subgraphCheckEdgesWithBijection(subgraphFound, fullBijection)) {
+                        // found a real induced subgraph: add to list
+                        inducedList.push(subgraphFound);
+                        break;
+                    }
+                }
+            }
             return;
         }
 
         // base case: add high degree vertex and neighbors to found IDs
         if(foundIDs.length === 0) {
-            const degreeWant = subgraphDegreesDescending[foundIDs.length];
+            const degreeWant = subgraphDegreesDesc[0];
 
             // branch on all possible vertices (based on degree)
-            for(const degreeIs of graphDegreesDescending) {
+            for(const degreeIs of graphDegreesDesc) {
                 if(degreeIs < degreeWant) break;
 
                 const verticesOfDegree = verticesByDegree.get(degreeIs);
@@ -111,8 +192,8 @@ export default class Graph {
                             forbidden.add(id);
                         }
 
-                        this.subgraphSearch(inducedList, subgraph, subgraphDegreesDescending, subgraphVerticesByDegree,
-                            graphDegreesDescending, verticesByDegree, foundSubgraph, forbidden);
+                        this.subgraphSearch(inducedList, subgraph, subgraphDegreesDesc, subgraphVerticesByDegree, subgraphDegreeAscByCount,
+                            graphDegreesDesc, verticesByDegree, foundSubgraph, forbidden);
                     }
                 }
             }
@@ -135,7 +216,7 @@ export default class Graph {
             for(let i=0; i<verticesByDegreeDescending.length; ++i) {
                 const vertex = verticesByDegreeDescending[i];
                 const degreeIs = vertex.degree();
-                const degreeWant = subgraphDegreesDescending[i];
+                const degreeWant = subgraphDegreesDesc[i];
 
                 // degree larger - cannot fix (should not happen)
                 if(degreeIs > degreeWant) {
@@ -163,8 +244,8 @@ export default class Graph {
                     // TODO: check that adding this vertex does not increase degrees of existing vertices by too much
 
                     // recurse
-                    this.subgraphSearch(inducedList, subgraph, subgraphDegreesDescending, subgraphVerticesByDegree,
-                        graphDegreesDescending, verticesByDegree, foundIDs, forbidden);
+                    this.subgraphSearch(inducedList, subgraph, subgraphDegreesDesc, subgraphVerticesByDegree, subgraphDegreeAscByCount,
+                        graphDegreesDesc, verticesByDegree, foundIDs, forbidden);
 
                     foundIDs.pop();
                 }
@@ -172,18 +253,36 @@ export default class Graph {
         }
     }
 
-    private subgraphCreateAndCheck(inducedList: Graph[], subgraph: Graph, subgraphDegreesDescending: number[], foundIDs: number[]): boolean {
-        // create subgraph
-        const subgraphFound = this.getSubgraphArray(foundIDs);
+    public subgraphCheckEdgesWithBijection(subgraph: Graph, bijection: Map<number, number>): boolean|undefined {
+        // this = found subgraph (large IDs). subgraph = looking for this subgraph (small IDs)
+        let partial = false;
 
-        // degrees don't match - discard
-        if(!ArrayEquals(subgraphDegreesDescending, subgraphFound.getDegreesDescending())) return false;
+        // for each pair
+        for(const fromVertex of this.vertices.values()) {
+            for(const toVertex of this.vertices.values()) {
+                // edge exists?
+                const edgeHere = fromVertex.neighbors.has(toVertex.id);
 
-        // check if there is a bijective function: for smallest degree
-        throw new Error("not implemented");
+                // use bijection to get the subgraph numbers
+                const fromMapped = bijection.get(fromVertex.id);
+                const toMapped = bijection.get(toVertex.id);
+                if(!fromMapped || !toMapped) {
+                    // in a partial mapping
+                    partial = true;
+                    continue;
+                }
 
-        // found a real induced subgraph: add to list
-        inducedList.push(subgraphFound);
+                // get mapped vertices in the subgraph
+                const fromSubgraph = subgraph.vertexGet(fromMapped);
+                const toSubgraph = subgraph.vertexGet(toMapped);
+                if(!fromSubgraph || !toSubgraph) return false;
+
+                // edge "exists / doesn't exist" is the same
+                if(edgeHere !== subgraph.edgeHas(fromSubgraph, toSubgraph)) return false;
+            }
+        }
+
+        if(partial) return undefined;
         return true;
     }
 
@@ -302,7 +401,7 @@ export default class Graph {
     public vertexAdd(vertex: Vertex): Vertex {
         // set an id for a new vertex (id<0)
         if(vertex.id < 0) {
-            let id = 0;
+            let id = 1;
             // get new id (=largest current id+1)
             for (let vid of this.vertices.keys()) {
                 id = Math.max(id, vid + 1);
@@ -345,12 +444,44 @@ export default class Graph {
 
     /** load a graph from json */
     public loadFromJson(json: string): void {
-        throw new Error("not implemented");
+        const data = JSON.parse(json) as { vertices: VertexData[] };
+
+        this.vertices.clear();
+
+        // add vertices
+        for (const vertexData of data.vertices) {
+            this.vertexAdd(Vertex.Vertex(vertexData));
+        }
+
+        // add edges
+        for (const v of data.vertices) {
+            const from = this.vertices.get(v.id);
+            if (!from) continue;
+
+            for (const neighborId of v.neighbors) {
+                const to = this.vertices.get(neighborId);
+                if (!to) continue;
+
+                this.edgeAdd(from, to);
+            }
+        }
     }
 
     /** convert the graph to json */
-    public saveToJson(json: string): void {
-        throw new Error("not implemented");
+    public saveToJson(): string {
+        const vertices: VertexData[] = [];
+
+        for (const v of this.vertices.values()) {
+            vertices.push({
+                id: v.id,
+                label: v.label,
+                x: v.position.x,
+                y: v.position.y,
+                neighbors: Array.from(v.neighbors).filter(to => to >= v.id),
+            });
+        }
+
+        return JSON.stringify({ vertices: vertices });
     }
 
     private constructor() {
