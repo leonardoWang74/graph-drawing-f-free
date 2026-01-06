@@ -5,8 +5,45 @@ import {ArrayEquals} from "@/app/util/ArrayUtils";
 import {SortNumberDescending} from "@/app/util/SortUtils";
 import {BijectionsCombination, BijectionsGraph} from "@/app/util/Bijections";
 
+export interface GraphData {
+    id: number;
+    name: string;
+    savedLast: string;
+    vertices: VertexData[];
+    edgeStyle: Map<number, Map<number, LineStyle>>;
+}
+
+export type LineType = "solid" | "dashed" | "dotted";
+export type LineWeight = "thin" | "normal" | "heavy" | "fat";
+
+export function LineStyleDefault(): LineStyle {
+    return {
+        color: "black",
+        weight: "normal",
+        type: "solid"
+    };
+}
+
+export interface LineStyle {
+    color: string;
+    type: LineType;
+    weight: LineWeight;
+}
+
+export const weightToWidth: Record<LineWeight, number> = {
+    thin: 1,
+    normal: 2,
+    heavy: 4,
+    fat: 6,
+};
+
 export default class Graph {
-    private vertices: Map<number, Vertex> = new Map<number, Vertex>();
+    public id: number;
+    public name: string = 'A graph';
+    public savedLast: string = '';
+
+    public vertices: Map<number, Vertex> = new Map<number, Vertex>();
+    public edgeStyle: Map<number, Map<number, LineStyle>> = new Map<number, Map<number, LineStyle>>();
 
     //////////////////////////////////////////
     // region complex functions
@@ -19,7 +56,7 @@ export default class Graph {
         const inducedList: Graph[] = [];
 
         // get degrees of the subgraph (including duplicates): descending
-        const subgraphDegreesDesc = subgraph.getDegreesDescending();
+        const subgraphDegreesDesc = subgraph.getDegreesDescending(true);
 
         // empty subgraph: return nothing
         if(subgraphDegreesDesc.length === 0) return inducedList;
@@ -86,7 +123,10 @@ export default class Graph {
             const subgraphFound = this.getSubgraphArray(foundIDs);
 
             // degrees don't match - discard
-            if(!ArrayEquals(subgraphDegreesDesc, subgraphFound.getDegreesDescending())) return;
+            if(!ArrayEquals(subgraphDegreesDesc, subgraphFound.getDegreesDescending(true))) return;
+            /*console.log('subgraphFound', subgraphFound)
+            console.log('subgraphDegreesDesc', subgraphDegreesDesc)
+            console.log('subgraphFound.getDegreesDescending()', subgraphFound.getDegreesDescending(true))*/
 
             // check if there is a bijective function: found -> subgraph
             const bijection : Map<number, number> = new Map<number, number>();
@@ -109,9 +149,9 @@ export default class Graph {
                 for(const vFound of verticesOfDegree) {
                     for(const vSub of subgraphOfDegree) {
                         if(subgraphVerticesUsed.has(vSub.id)) continue;
-
                         subgraphVerticesUsed.add(vSub.id);
                         bijection.set(vFound.id, vSub.id);
+                        break;
                     }
                 }
             }
@@ -125,11 +165,22 @@ export default class Graph {
                 if(!verticesOfDegree || !subgraphsOfDegree) continue;
                 if(verticesOfDegree.size === 0 || subgraphsOfDegree.size === 0) continue;
 
+                /*console.log('degree', degree)
+                console.log('verticesOfDegree', verticesOfDegree)
+                console.log('subgraphsOfDegree', subgraphsOfDegree)*/
+
                 // unique
                 if(verticesOfDegree.size === 1) {
-                    subgraphVerticesUsed.add(subgraphsOfDegree[0].id);
-                    bijection.set(verticesOfDegree[0].id, subgraphsOfDegree[0].id);
-                    continue;
+                    let v: Vertex|undefined = undefined;
+                    let s: Vertex|undefined = undefined;
+                    for(const vertex of verticesOfDegree) v = vertex;
+                    for(const vertex of subgraphsOfDegree) s = vertex;
+
+                    if(v && s) {
+                        subgraphVerticesUsed.add(v.id);
+                        bijection.set(v.id, s.id);
+                        continue;
+                    }
                 }
 
                 // non-unique: create a generator for the degree
@@ -142,8 +193,10 @@ export default class Graph {
 
             // all unique: already have the mapping
             if(generators.length === 0) {
+                console.log('bijection final', bijection);
+
                 // check edges fit using the bijection
-                if (this.subgraphCheckEdgesWithBijection(subgraphFound, bijection)) {
+                if (subgraphFound.subgraphCheckEdgesWithBijection(subgraph, bijection)) {
                     // found a real induced subgraph: add to list
                     inducedList.push(subgraphFound);
                 }
@@ -156,8 +209,10 @@ export default class Graph {
                         fullBijection.set(k, v);
                     }
 
+                    console.log('bijection from generators', fullBijection, 'generators', generators);
+
                     // check edges fit using the bijection
-                    if (this.subgraphCheckEdgesWithBijection(subgraphFound, fullBijection)) {
+                    if (subgraphFound.subgraphCheckEdgesWithBijection(subgraph, fullBijection)) {
                         // found a real induced subgraph: add to list
                         inducedList.push(subgraphFound);
                         break;
@@ -277,6 +332,8 @@ export default class Graph {
                 const toSubgraph = subgraph.vertexGet(toMapped);
                 if(!fromSubgraph || !toSubgraph) return false;
 
+                // console.log('from-to', fromVertex.id, toVertex.id,'mapped from-to', fromMapped, toMapped, 'edgeHere', edgeHere, 'subgraph edgeHas', subgraph.edgeHas(fromSubgraph, toSubgraph));
+
                 // edge "exists / doesn't exist" is the same
                 if(edgeHere !== subgraph.edgeHas(fromSubgraph, toSubgraph)) return false;
             }
@@ -319,8 +376,48 @@ export default class Graph {
 
     //////////////////////////////////////////
     // region advanced functions
-    // subgraph, list of vertex degrees
+    // subgraph, components, list of vertex degrees
     //////////////////////////////////////////
+
+    /** get the maximally connected components of this graph */
+    public getComponents(): Graph[] {
+        const components: Graph[] = [];
+
+        const found: Set<number> = new Set<number>();
+        for(const vertex of this.vertices.values()) {
+            if(found.has(vertex.id)) continue;
+
+            // component IDs
+            const ids: number[] = [];
+            // will add neighbors
+            const notYetAdded: number[] = [];
+
+            // add one vertex and its neighborhood
+            found.add(vertex.id);
+            notYetAdded.push(vertex.id);
+
+            // add neighborhoods until nothing was added
+            while(notYetAdded.length > 0) {
+                const vId = notYetAdded.shift();
+                if(!vId) continue;
+
+                ids.push(vId);
+                const v = this.vertexGet(vId);
+                if(!v) continue;
+
+                // add neighbors
+                for(const nId of v.neighbors) {
+                    if(found.has(nId)) continue;
+                    found.add(nId);
+                    notYetAdded.push(nId);
+                }
+            }
+
+            components.push(this.getSubgraphArray(ids));
+        }
+
+        return components;
+    }
 
     /** get a subgraph (reduced set of vertices, with the same edges). Creates new vertices with the same IDs (doesn't use the same vertex objects) */
     public getSubgraphArray(vertices: number[]): Graph {
@@ -416,6 +513,13 @@ export default class Graph {
     /** remove a vertex */
     public vertexRemove(vertex: Vertex): void {
         this.vertices.delete(vertex.id);
+
+        // remove edges to this vertex
+        for(const neighborId of vertex.neighbors) {
+            const v = this.vertexGet(neighborId);
+            if(!v) continue;
+            v.neighbors.delete(vertex.id);
+        }
     }
 
     /** returns TRUE iff vertex with `from` id has `to` as a neighbor */
@@ -443,45 +547,52 @@ export default class Graph {
     //////////////////////////////////////////
 
     /** load a graph from json */
-    public loadFromJson(json: string): void {
-        const data = JSON.parse(json) as { vertices: VertexData[] };
+    public static loadFromData(data: GraphData): Graph {
+        const graph = new Graph();
 
-        this.vertices.clear();
+        graph.id = data.id;
+        graph.name = data.name;
+        graph.savedLast = data.savedLast;
+        graph.vertices.clear();
 
         // add vertices
         for (const vertexData of data.vertices) {
-            this.vertexAdd(Vertex.Vertex(vertexData));
+            graph.vertexAdd(Vertex.VertexFromData(vertexData));
         }
 
         // add edges
         for (const v of data.vertices) {
-            const from = this.vertices.get(v.id);
+            const from = graph.vertices.get(v.id);
             if (!from) continue;
 
             for (const neighborId of v.neighbors) {
-                const to = this.vertices.get(neighborId);
+                const to = graph.vertices.get(neighborId);
                 if (!to) continue;
 
-                this.edgeAdd(from, to);
+                graph.edgeAdd(from, to);
             }
         }
+
+        return graph;
     }
 
     /** convert the graph to json */
-    public saveToJson(): string {
-        const vertices: VertexData[] = [];
+    public saveToData(): GraphData {
+        this.savedLast = new Date().toISOString();
+
+        const data: GraphData = {
+            id: this.id,
+            name: this.name,
+            savedLast: this.savedLast,
+            vertices: [],
+            edgeStyle: this.edgeStyle,
+        };
 
         for (const v of this.vertices.values()) {
-            vertices.push({
-                id: v.id,
-                label: v.label,
-                x: v.position.x,
-                y: v.position.y,
-                neighbors: Array.from(v.neighbors).filter(to => to >= v.id),
-            });
+            data.vertices.push(v.VertexToData());
         }
 
-        return JSON.stringify({ vertices: vertices });
+        return data;
     }
 
     private constructor() {
@@ -491,8 +602,8 @@ export default class Graph {
     public static Graph(): Graph {
         const graph = new Graph();
 
-        const v1 = graph.vertexAdd(Vertex.Vertex(new Vector2(0,0 )));
-        const v2 = graph.vertexAdd(Vertex.Vertex(new Vector2(50,0 )));
+        const v1 = graph.vertexAdd(Vertex.Vertex(new Vector2(50,50 )));
+        const v2 = graph.vertexAdd(Vertex.Vertex(new Vector2(100,50 )));
         graph.edgeAdd(v1, v2);
 
         return graph;

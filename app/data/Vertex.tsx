@@ -1,4 +1,5 @@
 import Vector2 from "@/app/data/Vector2";
+import {LineStyle} from "@/app/data/Graph";
 
 export interface VertexData {
     id: number;
@@ -8,12 +9,18 @@ export interface VertexData {
     y: number;
 
     neighbors: number[];
+
+    color: string;
+    lineStyle: LineStyle;
 }
 
 export class Vertex {
     public id: number = -1;
     public label: string;
     public position: Vector2;
+
+    public color: string = 'white';
+    public lineStyle: LineStyle = {color: "black", weight: 'normal', type: 'solid'};
 
     public neighbors: Set<number> = new Set<number>();
 
@@ -93,5 +100,19 @@ export class Vertex {
         vertex.label = data.label;
         vertex.position = new Vector2(data.x, data.y);
         return vertex;
+    }
+
+    public VertexToData(): VertexData {
+        return {
+            id: this.id,
+            label: this.label,
+            x: this.position.x,
+            y: this.position.y,
+
+            neighbors: Array.from(this.neighbors).filter(to => to >= this.id),
+
+            color: this.color,
+            lineStyle: this.lineStyle,
+        };
     }
 }
