@@ -14,12 +14,12 @@ export interface GraphData {
 }
 
 export type LineType = "solid" | "dashed" | "dotted";
-export type LineWeight = "thin" | "normal" | "heavy" | "fat";
+export type LineWeight = "thin" | "normal" | "heavy" | "fat" | number;
 
 export function LineStyleDefault(): LineStyle {
     return {
-        color: "#00000029",
-        weight: "normal",
+        color: "#00000040",
+        weight: "thin",
         type: "solid"
     };
 }
@@ -30,17 +30,27 @@ export interface LineStyle {
     weight: LineWeight;
 }
 
-export const weightToWidth: Record<LineWeight, number> = {
-    thin: 1,
-    normal: 2,
-    heavy: 4,
-    fat: 6,
+export const weightToWidth = (lw: LineWeight): number => {
+    switch (lw) {
+        case 'thin':
+            return 1;
+        case 'normal':
+            return 1;
+        case 'heavy':
+            return 1;
+        case 'fat':
+            return 1;
+        default:
+            return +lw;
+    }
 };
 
 export default class Graph {
     public id: number;
     public name: string = 'A graph';
     public savedLast: string = '';
+
+    public active: boolean = false;
 
     public vertices: Map<number, Vertex> = new Map<number, Vertex>();
     public edgeStyle: Map<number, Map<number, LineStyle>> = new Map<number, Map<number, LineStyle>>();
@@ -193,7 +203,7 @@ export default class Graph {
 
             // all unique: already have the mapping
             if(generators.length === 0) {
-                console.log('bijection final', bijection);
+                // console.log('bijection final', bijection);
 
                 // check edges fit using the bijection
                 if (subgraphFound.subgraphCheckEdgesWithBijection(subgraph, bijection)) {
@@ -209,7 +219,7 @@ export default class Graph {
                         fullBijection.set(k, v);
                     }
 
-                    console.log('bijection from generators', fullBijection, 'generators', generators);
+                    // console.log('bijection from generators', fullBijection, 'generators', generators);
 
                     // check edges fit using the bijection
                     if (subgraphFound.subgraphCheckEdgesWithBijection(subgraph, fullBijection)) {

@@ -7,6 +7,13 @@ export default class Vector2 {
         this.y = y;
     }
 
+    public plus(b: Vector2): Vector2 {
+        return new Vector2(this.x + b.x, this.y + b.y);
+    }
+    public minus(b: Vector2): Vector2 {
+        return new Vector2(this.x - b.x, this.y - b.y);
+    }
+
     public toString() : string {
         return `(${this.x}, ${this.y})`;
     }
