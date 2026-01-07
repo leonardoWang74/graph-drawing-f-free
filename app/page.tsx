@@ -127,21 +127,28 @@ export default function GraphWindow() {
         const components = forbidden.getSubgraphWithoutDisabled().getComponents();
         console.log('forbidden subgraphs:', components);
 
+        let activeGraph = graph;
+        if(graph.activeVertices.length > 0) activeGraph = graph.getSubgraph(graph.activeVertices);
+
         // find induced forbidden subgraphs
         const inducedForbidden: Graph[] = [];
         for(const forbidden of components) {
-            inducedForbidden.push(...graph.inducedSubgraphs(forbidden));
+            inducedForbidden.push(...activeGraph.inducedSubgraphs(forbidden));
         }
+        graph.forbiddenInduced = inducedForbidden;
         console.log('inducedForbidden', inducedForbidden);
         console.log('################################################');
 
         const forbiddenStyle = LineStyleDefault();
-        forbiddenStyle.color = '#ff000035'
+        forbiddenStyle.color = '#ff000085'
 
         // change "red" colors in the graph to black
         const lineStyleDefault = LineStyleDefault();
         for(const map of graph.edgeStyle.values()) {
-            for(const style of map.values()) {
+            for(const [vid, style] of map.entries()) {
+                // do not remove: un-selected vertices
+                if(!activeGraph.vertices.has(vid)) continue;
+
                 if(style.color === forbiddenStyle.color) style.color = lineStyleDefault.color;
             }
         }
@@ -163,17 +170,20 @@ export default function GraphWindow() {
 
     return (
         <div className="flex flex-col h-screen">
-            {graph && saveData &&
-                <GraphEditor height={66} graph={graph} saveData={saveData} saveDataSave={saveDataSave}
-                             update={update} updateSet={updateSet} setGraphActive={setGraphActive}/>}
-            {forbidden && saveData &&
-                <GraphEditor height={34} graph={forbidden} saveData={saveData} saveDataSave={saveDataSave}
-                             update={update} updateSet={updateSet} setGraphActive={setGraphActive}/>}
-
-            <div className="flex gap-2 p-2 border-b border-transparent">
+            <div className="flex gap-2 p-2 border-b border-r">
                 <button type="button" className={buttonClass}
                         onClick={getForbiddenSubgraphs}>Find induced Forbidden Subgraphs
                 </button>
+                <div className="h-100% pt-2 ml-2">Found: {graph?.forbiddenInduced.length ?? 0}</div>
+            </div>
+            <div className="flex flex-row h-screen">
+                {graph && saveData &&
+                    <GraphEditor height={75} graph={graph} saveData={saveData} saveDataSave={saveDataSave}
+                                 update={update} updateSet={updateSet} setGraphActive={setGraphActive}/>}
+                {forbidden && saveData &&
+                    <GraphEditor height={25} graph={forbidden} saveData={saveData} saveDataSave={saveDataSave}
+                                 update={update} updateSet={updateSet} setGraphActive={setGraphActive}/>}
+
             </div>
         </div>
     );
@@ -185,6 +195,8 @@ interface PanningData {
 }
 
 interface BoxSelectionData {
+    shift: boolean;
+    ctrl: boolean;
     activeVertices: number[];
     from: Vector2;
     to: Vector2;
@@ -217,7 +229,7 @@ export function GraphEditor({height, graph, saveDataSave, update, updateSet, set
     const [panning, panningSet] = useState<PanningData>();
     const [mouseLast, mouseLastSet] = useState<PointerData>({screen: new Vector2(0,0)});
 
-    const [activeVertices, activeVerticesSet] = useState<number[]>([]);
+    // const [activeVertices, activeVerticesSet] = useState<number[]>([]);
     const [dragVertex, dragVertexSet] = useState<VertexDragData>();
 
     const [activeEdge, activeEdgeSet] = useState<Vector2>();
@@ -261,22 +273,23 @@ export function GraphEditor({height, graph, saveDataSave, update, updateSet, set
         // left click on canvas = box select / deselect
         if (e.button === 0) {
             // no shift key: clear selection
-            let activeVerticesStart = [...activeVertices];
-            if(!e.shiftKey) {
+            let activeVerticesStart = [...graph.activeVertices];
+
+            if(!e.ctrlKey && !e.shiftKey) {
                 activeVerticesStart = [];
-                activeVerticesSet([]);
+                graph.activeVertices = [];
                 activeEdgeSet(null);
             }
 
             const screenPos = getMousePositionScreen(e);
-            boxSelectSet({activeVertices: activeVerticesStart, from: screenPos, to: screenPos});
+            boxSelectSet({shift: e.shiftKey, ctrl: e.ctrlKey, activeVertices: activeVerticesStart, from: screenPos, to: screenPos});
             return;
         }
         // middle click = pan
         else if (e.button === 1) {
             panningSet({panStart: view.pan, mouseStart: new Vector2(e.clientX, e.clientY)});
         }
-    }, [view, getMousePositionScreen, activeVertices]);
+    }, [view, getMousePositionScreen, graph]);
 
     const onMouseMove = useCallback((e: React.MouseEvent) => {
         if (!graph) return;
@@ -309,19 +322,28 @@ export function GraphEditor({height, graph, saveDataSave, update, updateSet, set
 
             const active = [...boxSelect.activeVertices];
             for(const vertex of graph.vertices.values()) {
-                if(active.includes(vertex.id)) continue;
-
                 // check bounding box
                 if(
                     worldFrom.x <= vertex.position.x && vertex.position.x <= worldTo.x
                     && worldFrom.y <= vertex.position.y && vertex.position.y <= worldTo.y
                 ) {
-                    active.push(vertex.id);
+                    // add to selection
+                    if(!boxSelect.ctrl || boxSelect.shift) {
+                        if(!active.includes(vertex.id)) {
+                            active.push(vertex.id);
+                            continue;
+                        }
+                    }
+                    // ctrl: remove from selection
+                    if(boxSelect.ctrl) {
+                        const index = active.indexOf(vertex.id);
+                        if(index>=0) active.splice(index, 1);
+                    }
                 }
             }
 
-            if(!ArrayEquals(activeVertices, active)) {
-                activeVerticesSet(active);
+            if(!ArrayEquals(graph.activeVertices, active)) {
+                graph.activeVertices = active;
                 updateSet(new Date());
             }
             // boxSelectSet({...boxSelect, to: getMousePositionScreen(e)});
@@ -334,7 +356,7 @@ export function GraphEditor({height, graph, saveDataSave, update, updateSet, set
             const v = graph.vertexGet(dragVertex.vertex);
             if (v) {
                 // move other selected vertices relative to v's current position
-                for(const vId of activeVertices) {
+                for(const vId of graph.activeVertices) {
                     const vertex = graph.vertexGet(vId);
                     if(!vertex || vertex.id === v.id) continue;
                     vertex.position = new Vector2(pos.x + vertex.position.x - v.position.x, pos.y + vertex.position.y - v.position.y);
@@ -348,7 +370,7 @@ export function GraphEditor({height, graph, saveDataSave, update, updateSet, set
         // mouseLast.screen = getMousePositionScreen(e);
         mouseLastSet({...mouseLast, screen: getMousePositionScreen(e)});
         setGraphActive(graph);
-    }, [panning, view, mouseLast, dragVertex, graph, getMousePositionScreen, getMousePositionWorld, activeVertices, boxSelect]);
+    }, [panning, view, mouseLast, dragVertex, graph, getMousePositionScreen, getMousePositionWorld, boxSelect]);
 
     const onMouseUp = useCallback((_: React.MouseEvent) => {
         if (!graph) return;
@@ -361,13 +383,13 @@ export function GraphEditor({height, graph, saveDataSave, update, updateSet, set
     }, [graph, screenToWorld, saveDataSave, panning, boxSelect]);
 
     const onDoubleClick = useCallback((e: React.MouseEvent) => {
-        if (!graph || activeVertices.length>0 || activeEdge) return;
+        if (!graph || graph.activeVertices.length>0 || activeEdge) return;
 
         graph.vertexAdd(Vertex.Vertex(getMousePositionWorld(e)));
 
         updateSet(new Date());
         saveDataSave();
-    }, [getMousePositionWorld, graph, updateSet, saveDataSave, activeVertices]);
+    }, [getMousePositionWorld, graph, updateSet, saveDataSave]);
 
     const zoomChange = useCallback((e: React.MouseEvent|undefined, zoomNow: number, zoomIn: boolean) => {
         // different deltas depending on the current zoom
@@ -428,7 +450,7 @@ export function GraphEditor({height, graph, saveDataSave, update, updateSet, set
         // SVG namespace
         clone.setAttribute("xmlns", "http://www.w3.org/2000/svg");
 
-        // remove things
+        // filter vertices and edges: only selected (active) vertices
         if(selectedVertices.length > 0) {
             // remove vertices not selected
             clone.querySelectorAll("[data-vertex]").forEach(el => {
@@ -479,12 +501,12 @@ export function GraphEditor({height, graph, saveDataSave, update, updateSet, set
 
             // delete currently selected vertices / edges
             if (e.key === "Delete" || e.key === "x") {
-                if (activeVertices.length>0) {
-                    for(const vId of activeVertices) {
+                if (graph.activeVertices.length>0) {
+                    for(const vId of graph.activeVertices) {
                         const v = graph.vertexGet(vId);
                         if (v) graph.vertexRemove(v);
                     }
-                    activeVerticesSet([]);
+                    graph.activeVertices = [];
                 }
                 if (activeEdge) {
                     const va = graph.vertexGet(activeEdge.x);
@@ -496,14 +518,14 @@ export function GraphEditor({height, graph, saveDataSave, update, updateSet, set
             }
             // clear selection
             else if (e.key === "Escape") {
-                activeVerticesSet([]);
+                graph.activeVertices = [];
                 activeEdgeSet(undefined);
             }
             // copy
             else if (e.key === "c") {
                 if(e.ctrlKey) {
                     clipboardSet({
-                        graph: graph.getSubgraph(activeVertices),
+                        graph: graph.getSubgraph(graph.activeVertices),
                         mouseWorld: screenToWorld(mouseLast.screen),
                     });
                     e.preventDefault();
@@ -512,7 +534,7 @@ export function GraphEditor({height, graph, saveDataSave, update, updateSet, set
             // export / save
             else if (e.key === "s") {
                 if(e.ctrlKey) {
-                    exportSelection(svgRef.current!, graph, activeVertices, "subgraph.svg");
+                    exportSelection(svgRef.current!, graph, graph.activeVertices, "subgraph.svg");
                     e.preventDefault();
                 }
             }
@@ -520,8 +542,7 @@ export function GraphEditor({height, graph, saveDataSave, update, updateSet, set
             else if (e.key === "v") {
                 if(e.ctrlKey) {
                     if(clipboard) {
-                        const insertedIDs = graph.addSubgraph(clipboard.graph, clipboard.mouseWorld, screenToWorld(mouseLast.screen));
-                        activeVerticesSet(insertedIDs);
+                        graph.activeVertices = graph.addSubgraph(clipboard.graph, clipboard.mouseWorld, screenToWorld(mouseLast.screen));
 
                         updateSet(new Date());
                         e.preventDefault();
@@ -544,7 +565,7 @@ export function GraphEditor({height, graph, saveDataSave, update, updateSet, set
                 if(e.ctrlKey) {
                     const edgeFunction = e.shiftKey ? keyboardFunctionEdgesAdd : keyboardFunctionEdgesToggle;
 
-                    const last = activeVertices.length>0 ? activeVertices[activeVertices.length-1] : -1;
+                    const last = graph.activeVertices.length>0 ? graph.activeVertices[graph.activeVertices.length-1] : -1;
                     pairFunction = (g: Graph, from: Vertex, to: Vertex) => {
                         if(to.id !== last && from.id!==last) return;
                         edgeFunction(g, from, to);
@@ -555,9 +576,9 @@ export function GraphEditor({height, graph, saveDataSave, update, updateSet, set
                     const edgeFunction = e.shiftKey ? keyboardFunctionEdgesAdd : keyboardFunctionEdgesToggle;
                     pairFunction = (g: Graph, from: Vertex, to: Vertex) => {
                         let found = false;
-                        for(let i= 0; i<activeVertices.length; ++i) {
-                            const v1 = activeVertices[i];
-                            const v2 = activeVertices[(i+1) % activeVertices.length];
+                        for(let i= 0; i<graph.activeVertices.length; ++i) {
+                            const v1 = graph.activeVertices[i];
+                            const v2 = graph.activeVertices[(i+1) % graph.activeVertices.length];
                             if(
                                 (from.id === v1 && to.id === v2)
                                 || (from.id === v2 && to.id === v1)
@@ -579,11 +600,11 @@ export function GraphEditor({height, graph, saveDataSave, update, updateSet, set
                     pairFunction = keyboardFunctionEdgesToggle;
                 }
 
-                for(const fromId of activeVertices) {
+                for(const fromId of graph.activeVertices) {
                     const from = graph.vertexGet(fromId);
                     if(!from) continue;
 
-                    for(const toId of activeVertices) {
+                    for(const toId of graph.activeVertices) {
                         if(fromId >= toId) continue;
                         const to = graph.vertexGet(toId);
                         if(!to) continue;
@@ -598,7 +619,7 @@ export function GraphEditor({height, graph, saveDataSave, update, updateSet, set
             }
             // "d": disable selection
             else if (e.key === "d") {
-                for(const vId of activeVertices) {
+                for(const vId of graph.activeVertices) {
                     const vertex = graph.vertexGet(vId);
                     if(!vertex) continue;
                     vertex.disabled = !vertex.disabled;
@@ -610,14 +631,14 @@ export function GraphEditor({height, graph, saveDataSave, update, updateSet, set
         };
         window.addEventListener("keydown", onKey);
         return () => window.removeEventListener("keydown", onKey);
-    }, [activeVertices, activeEdge, graph, saveDataSave, screenToWorld, mouseLast, clipboard,
+    }, [activeEdge, graph, saveDataSave, screenToWorld, mouseLast, clipboard,
         keyboardFunctionEdgesAdd, keyboardFunctionEdgesToggle]);
     // endregion keyboard
 
     const edgeClick = useCallback((e: React.MouseEvent, fromId: number, toid: number) => {
         if (e.button !== 0) return;
         activeEdgeSet(new Vector2(fromId, toid));
-        activeVerticesSet([]);
+        graph.activeVertices = [];
         e.stopPropagation();
     }, []);
 
@@ -625,20 +646,18 @@ export function GraphEditor({height, graph, saveDataSave, update, updateSet, set
         if (e.button !== 0) return;
 
         if(e.shiftKey) {
-            if(!active) activeVerticesSet(cv => [...cv, v.id]);
+            if(!active) graph.activeVertices.push(v.id);
             else {
-                activeVerticesSet(cv => {
-                    const copy = [...cv];
-                    const index = copy.indexOf(v.id);
-                    if(index>=0) {
-                        copy.splice(index, 1);
-                    }
-                    return copy
-                });
+                const copy = [...graph.activeVertices];
+                const index = copy.indexOf(v.id);
+                if(index>=0) {
+                    copy.splice(index, 1);
+                }
+                graph.activeVertices = copy;
             }
         }
         else {
-            if(!active) activeVerticesSet([v.id]);
+            if(!active) graph.activeVertices = [v.id];
 
             const mousePos = getMousePositionWorld(e);
             dragVertexSet({vertex: v.id, mouseStartOffset: v.position.minus(mousePos)});
@@ -648,10 +667,11 @@ export function GraphEditor({height, graph, saveDataSave, update, updateSet, set
 
         e.stopPropagation();
         e.preventDefault();
+        updateSet(new Date());
     }, [getMousePositionWorld]);
 
     return (
-        <div className="flex flex-col border-t" style={{height: height+"vh"}}>
+        <div className="flex flex-col border-r" style={{width: height+"vw"}}>
             <div className="flex gap-2 p-2 border-b border-transparent">
                 <button type="button" className={buttonClass}
                         onClick={() => zoomChange(undefined, view.zoom, false)}>-
@@ -678,7 +698,7 @@ export function GraphEditor({height, graph, saveDataSave, update, updateSet, set
             >
                 <g ref={worldRef} transform={`translate(${view.pan.x}, ${view.pan.y}) scale(${view.zoom})`}>
                     <GraphRender graph={graph}
-                                 activeVertices={activeVertices}
+                                 activeVertices={graph.activeVertices}
                                  edgeClick={edgeClick}
                                  vertexClick={vertexClick}
 
@@ -697,7 +717,7 @@ export function GraphEditor({height, graph, saveDataSave, update, updateSet, set
                     {`${screenToWorld(mouseLast.screen).toStringFraction(0)}`}
                 </text>}
 
-                {/* Clipboard info */ <text
+                {/* Selected vertices */ <text
                     className="select-none"
                     data-ui="true"
                     x="100%" y="100%" dx={-10} dy={-24}
@@ -706,7 +726,7 @@ export function GraphEditor({height, graph, saveDataSave, update, updateSet, set
                     pointerEvents="none"
                     textAnchor="end" dominantBaseline="bottom"
                 >
-                    Clipboard: {clipboard ? clipboard.graph.n() + ' Vertices' : 'Empty'}<br/>
+                    Selected {graph.activeVertices.length} Vertices
                 </text>}
 
                 {/* last save */ graph?.savedLast && <text
@@ -793,7 +813,7 @@ const GraphRender = React.memo(function GraphVerticesAndEdges(props: {
                         data-edge-from={v.id} data-edge-to={n.id}
                         x1={v.position.x} y1={v.position.y}
                         x2={n.position.x} y2={n.position.y}
-                        stroke={endpointActive ? ColorHexSetTransparency(lineStyle.color, endpointBothActive ? 'b0' : '70') : lineStyle.color}
+                        stroke={endpointActive ? ColorHexSetTransparency(lineStyle.color, endpointBothActive ? 'c0' : 'a0') : lineStyle.color}
                         strokeWidth={(endpointActive ? (endpointBothActive ? 2 : 1) : 0) + weightToWidth(lineStyle.weight)}
                         strokeDasharray={(endpointActive && !endpointBothActive) || lineStyle.type === "dashed" ? "6,8" : lineStyle.type === "dotted" ? "2,4" : undefined}
                         onClick={e => props.edgeClick(e, v.id, nId)}

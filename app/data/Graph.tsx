@@ -18,7 +18,7 @@ export type LineWeight = "thin" | "normal" | "heavy" | "fat" | number;
 
 export function LineStyleDefault(): LineStyle {
     return {
-        color: "#00000040",
+        color: "#00000060",
         weight: "thin",
         type: "solid"
     };
@@ -54,6 +54,9 @@ export default class Graph {
 
     public vertices: Map<number, Vertex> = new Map<number, Vertex>();
     public edgeStyle: Map<number, Map<number, LineStyle>> = new Map<number, Map<number, LineStyle>>();
+
+    public activeVertices: number[] = [];
+    public forbiddenInduced: Graph[] = [];
 
     //////////////////////////////////////////
     // region complex functions
@@ -388,6 +391,28 @@ export default class Graph {
     // region advanced functions
     // subgraph, components, list of vertex degrees
     //////////////////////////////////////////
+
+    /** check whether the given `graph` has the same count and IDs of vertices */
+    public filterForbiddenInSelection(selection: number[]): Graph[] {
+        const list: Graph[] = [];
+        const subgraph = this.getSubgraph(selection);
+
+        // check whether vertices are the same
+        for(const induced of this.forbiddenInduced) {
+            if(subgraph.hasSameVertexIDs(induced)) list.push(induced);
+        }
+
+        return list;
+    }
+
+    /** check whether the given `graph` has the same count and IDs of vertices */
+    public hasSameVertexIDs(graph: Graph): boolean {
+        if(this.vertices.size !== graph.vertices.size) return false;
+        for(const vid of this.vertices.keys()) {
+            if(!graph.vertices.has(vid)) return false;
+        }
+        return true;
+    }
 
     /** get the maximally connected components of this graph */
     public getComponents(): Graph[] {
