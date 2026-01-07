@@ -4,6 +4,7 @@ import {LineStyle} from "@/app/data/Graph";
 export interface VertexData {
     id: number;
     label: string;
+    disabled: boolean;
 
     x: number;
     y: number;
@@ -18,6 +19,7 @@ export class Vertex {
     public id: number = -1;
     public label: string;
     public position: Vector2;
+    public disabled: boolean;
 
     public color: string = 'white';
     public lineStyle: LineStyle = {color: "black", weight: 'normal', type: 'solid'};
@@ -98,6 +100,7 @@ export class Vertex {
         const vertex = new Vertex();
         vertex.id = data.id;
         vertex.label = data.label;
+        vertex.disabled = data.disabled ?? false;
         vertex.position = new Vector2(data.x, data.y);
         return vertex;
     }
@@ -106,6 +109,8 @@ export class Vertex {
         return {
             id: this.id,
             label: this.label,
+            disabled: this.disabled,
+
             x: this.position.x,
             y: this.position.y,
 

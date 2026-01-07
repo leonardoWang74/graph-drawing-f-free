@@ -19,7 +19,8 @@ export interface GraphEditorProps {
     saveDataSave: () => void;
 }
 
-const buttonClass = "text-body bg-neutral-secondary-medium box-border border border-default-medium hover:bg-neutral-tertiary-medium hover:text-heading focus:ring-4 focus:ring-neutral-tertiary shadow-xs font-medium leading-5 rounded-base text-sm px-4 py-2.5 focus:outline-none";
+const vertexRadius = 18;
+const buttonClass = "text-body bg-neutral-secondary-medium box-border border border-default-medium hover:bg-neutral-tertiary-medium hover:text-heading focus:ring-4 focus:ring-neutral-tertiary shadow-xs font-medium leading-5 rounded-base text-sm px-4 py-2.5 focus:outline-none rounded";
 
 export default function GraphWindow() {
     const [_, updateSet] = useState<Date>();
@@ -104,7 +105,7 @@ export default function GraphWindow() {
 
     const getForbiddenSubgraphs = useCallback(() => {
         if(!graph || !forbidden) return;
-        const components = forbidden.getComponents();
+        const components = forbidden.getSubgraphWithoutDisabled().getComponents();
         console.log('forbidden subgraphs:', components);
 
         // find induced forbidden subgraphs
@@ -154,8 +155,13 @@ export default function GraphWindow() {
     );
 }
 
+interface PanningData {
+    mouseStart: Vector2;
+    panStart: Vector2;
+}
+
 interface BoxSelectionData {
-    active: boolean;
+    activeVertices: number[];
     from: Vector2;
     to: Vector2;
 }
@@ -165,39 +171,39 @@ export function GraphEditor({height, graph, saveDataSave}: GraphEditorProps) {
 
     const svgRef = useRef<SVGSVGElement | null>(null);
 
-    const [pan, setPan] = useState<Vector2>(new Vector2(0, 0));
-    const [zoom, setZoom] = useState(1);
-    const [isPanning, setIsPanning] = useState(false);
-    const [lastMouse, setLastMouse] = useState<Vector2>();
+    const [pan, panSet] = useState<Vector2>(new Vector2(0, 0));
+    const [zoom, zoomSet] = useState(1);
+    const [panning, panningSet] = useState<PanningData>();
+    const [lastMouse, lastMouseSet] = useState<Vector2>(new Vector2(0,0));
 
     const [activeVertices, activeVerticesSet] = useState<number[]>([]);
 
     // const [activeVertex, setActiveVertex] = useState<number>();
-    const [activeEdge, setActiveEdge] = useState<Vector2>();
-    const [dragVertex, setDragVertex] = useState<number>();
-    const [edgeDragFrom, setEdgeDragFrom] = useState<number>()
+    const [activeEdge, activeEdgeSet] = useState<Vector2>();
+    const [dragVertex, dragVertexSet] = useState<number>();
 
-    const [boxSelect, boxSelectSet] = useState<BoxSelectionData>({active: false, from: new Vector2(0,0), to: new Vector2(0,0)})
+    const [boxSelect, boxSelectSet] = useState<BoxSelectionData>();
 
     /** =========================
      * Utilities
      * ========================= */
-    const screenToWorld = useCallback(
-        (x: number, y: number) => ({
-            x: (x - pan.x) / zoom,
-            y: (y - pan.y) / zoom,
-        }),
-        [pan, zoom]
-    );
+    const screenToWorldCalculation = useCallback((pan: Vector2, zoom: number, pos: Vector2) => {
+        return new Vector2((pos.x - pan.x) / zoom, (pos.y - pan.y) / zoom);
+    },[]);
 
+    const screenToWorld = useCallback((pos: Vector2) => {
+        return screenToWorldCalculation(pan, zoom, pos);
+    },[pan, zoom, screenToWorldCalculation]);
 
-    const getMouse = useCallback(
-        (evt: React.MouseEvent) => {
-            const rect = svgRef.current!.getBoundingClientRect();
-            return screenToWorld(evt.clientX - rect.left, evt.clientY - rect.top);
-        },
-        [screenToWorld]
-    );
+    const getMousePositionScreen = useCallback((e: React.MouseEvent) => {
+        const rect = svgRef.current!.getBoundingClientRect();
+        return new Vector2(e.clientX - rect.left, e.clientY - rect.top);
+    },[svgRef]);
+
+    const getMousePositionWorld = useCallback((e: React.MouseEvent) => {
+        const screenPos = getMousePositionScreen(e);
+        return screenToWorld(screenPos);
+    },[screenToWorld, getMousePositionScreen]);
 
     /** =========================
      * Canvas interactions
@@ -205,33 +211,70 @@ export function GraphEditor({height, graph, saveDataSave}: GraphEditorProps) {
     const onMouseDownCanvas = useCallback((e: React.MouseEvent) => {
         // left click on canvas = box select / deselect
         if (e.button === 0) {
-            activeVerticesSet([]);
-            setActiveEdge(null);
+            // no shift key: clear selection
+            let activeVerticesStart = [...activeVertices];
+            if(!e.shiftKey) {
+                activeVerticesStart = [];
+                activeVerticesSet([]);
+                activeEdgeSet(null);
+            }
+
+            const screenPos = getMousePositionScreen(e);
+            boxSelectSet({activeVertices: activeVerticesStart, from: screenPos, to: screenPos});
             return;
         }
         // middle click = pan
         else if (e.button === 1) {
-            setIsPanning(true);
-            setLastMouse({x: e.clientX, y: e.clientY});
+            panningSet({panStart: pan, mouseStart: new Vector2(e.clientX, e.clientY)});
         }
-    }, []);
+    }, [pan, getMousePositionScreen, activeVertices]);
 
     const onMouseMove = useCallback((e: React.MouseEvent) => {
         if (!graph) return;
 
         // pan view
-        if (isPanning && lastMouse) {
-            const dx = e.clientX - lastMouse.x;
-            const dy = e.clientY - lastMouse.y;
+        if (panning) {
+            panSet(new Vector2(
+                panning.panStart.x + e.clientX - panning.mouseStart.x,
+                panning.panStart.y + e.clientY - panning.mouseStart.y
+            ));
+        }
 
-            setPan(p => ({x: p.x + dx, y: p.y + dy}));
-            setLastMouse({x: e.clientX, y: e.clientY});
-            return;
+        // box select: move end point
+        if (boxSelect) {
+            boxSelect.to = getMousePositionScreen(e);
+
+            const worldFromUnsorted = screenToWorld(boxSelect.from);
+            const worldToUnsorted = screenToWorld(boxSelect.to);
+
+            const slack = vertexRadius * 0.6;
+            const worldFrom = new Vector2(
+                Math.min(worldFromUnsorted.x, worldToUnsorted.x) - slack,
+                Math.min(worldFromUnsorted.y, worldToUnsorted.y) - slack
+            );
+            const worldTo = new Vector2(
+                Math.max(worldFromUnsorted.x, worldToUnsorted.x) + slack,
+                Math.max(worldFromUnsorted.y, worldToUnsorted.y) + slack
+            );
+
+            const active = [...boxSelect.activeVertices];
+            for(const vertex of graph.vertices.values()) {
+                if(active.includes(vertex.id)) continue;
+
+                // check bounding box
+                if(
+                    worldFrom.x <= vertex.position.x && vertex.position.x <= worldTo.x
+                    && worldFrom.y <= vertex.position.y && vertex.position.y <= worldTo.y
+                ) {
+                    active.push(vertex.id);
+                }
+            }
+            activeVerticesSet(active);
         }
 
         // move active vertex
         if (dragVertex) {
-            const pos = getMouse(e);
+            const pos = getMousePositionWorld(e);
             const v = graph.vertexGet(dragVertex);
             if (v) {
                 // move other selected vertices relative to v's current position
@@ -245,76 +288,66 @@ export function GraphEditor({height, graph, saveDataSave}: GraphEditorProps) {
                 updateSet(new Date());
             }
         }
-    }, [isPanning, lastMouse, dragVertex, graph, getMouse, activeVertices]);
 
-    const onMouseUp = useCallback((e: React.MouseEvent) => {
+        lastMouseSet( new Vector2(e.clientX, e.clientY));
+    }, [panning, lastMouse, dragVertex, graph, getMousePositionScreen, getMousePositionWorld, activeVertices, boxSelect]);
+
+    const onMouseUp = useCallback((_: React.MouseEvent) => {
         if (!graph) return;
 
-        setIsPanning(false);
-        setLastMouse(null);
+        if(!panning && !boxSelect) saveDataSave();
 
-        if (edgeDragFrom) {
-            const vertexFrom = graph.vertexGet(edgeDragFrom);
-            if(vertexFrom) {
-                const pos = getMouse(e);
-                for (const v of graph.vertices.values()) {
-                    const dx = v.position.x - pos.x;
-                    const dy = v.position.y - pos.y;
-                    if (Math.hypot(dx, dy) < 12 && v.id !== edgeDragFrom) {
-                        if(!vertexFrom.edgeHas(v)) graph.edgeAdd(vertexFrom, v);
-                        else graph.edgeRemove(vertexFrom, v);
-                    }
-                }
-            }
-        }
-
-        if(!isPanning) saveDataSave();
-
-        setEdgeDragFrom(null);
-        setDragVertex(null);
-    }, [edgeDragFrom, graph, getMouse, saveDataSave, isPanning]);
+        panningSet(undefined);
+        boxSelectSet(undefined);
+        dragVertexSet(null);
+    }, [graph, screenToWorld, saveDataSave, panning, boxSelect]);
 
     const onDoubleClick = useCallback((e: React.MouseEvent) => {
-        if (!graph || activeVertices.length>0) return;
+        if (!graph || activeVertices.length>0 || activeEdge) return;
 
-        const pos = getMouse(e);
+        const pos = getMousePositionWorld(e);
         const v = Vertex.Vertex(pos);
         graph.vertexAdd(v);
 
         updateSet(new Date());
         saveDataSave();
-    }, [getMouse, graph, updateSet, saveDataSave, activeVertices]);
+    }, [getMousePositionWorld, graph, updateSet, saveDataSave, activeVertices]);
 
 
     /** =========================
      * Zoom
      * ========================= */
-    const onWheel = useCallback((e: React.WheelEvent) => {
-        if (!svgRef.current) return;
+    const zoomChange = useCallback((e: React.MouseEvent|undefined, zoomNow: number, zoomIn: boolean) => {
+        // different deltas depending on the current zoom
+        let delta = 0.25;
+        if(zoomNow <= 0.51 && !zoomIn) {
+            delta = 0.05;
+        }
+        else if(zoomNow < 0.49) {
+            delta = 0.05;
+        }
+        const zoomNew = Math.min(2, Math.max(0.05, zoomNow + delta * (zoomIn?1:-1)));
 
+        // change pan so that mouse / screen center stays at the same world position
         const rect = svgRef.current!.getBoundingClientRect();
-        const mouseX = 0; // e.clientX - rect.left;
-        const mouseY = 0; // e.clientY - rect.top;
-        const factor = 0.3;
+        const screenX = e ? e.clientX - rect.left : rect.width / 2;
+        const screenY = e ? e.clientY - rect.top : rect.height / 2;
 
-        setZoom(oldZoom => {
-            const zoomFactor = e.deltaY < 0 ? 1.1 : 0.9;
-            const newZoom = Math.min(2, Math.max(0.25, oldZoom * zoomFactor));
+        // screenToWorldCalculation(pan, zoom, x, y) = new Vector2((x - pan.x) / zoom, (y - pan.y) / zoom);
+        const screenCenterNow = screenToWorldCalculation(pan, zoomNow, new Vector2(screenX, screenY));
 
-            // world position under mouse before zoom
-            /*const worldX = (mouseX - pan.x) / oldZoom;
-            const worldY = (mouseY - pan.y) / oldZoom;
+        // screenCenterNew = screenToWorldCalculation(panNew, zoomNew, x,y) = new Vector2((x - panNew.x) / zoomNew, (y - panNew.y) / zoomNew);
+        // solving for panNew.x: (x - panNew.x) / zoomNew = screenCenterNow.x
+        // solving for panNew.x: panNew.x = x - screenCenterNow * zoomNew
+        panSet(new Vector2(screenX - screenCenterNow.x * zoomNew, screenY - screenCenterNow.y * zoomNew));
 
-            // adjust pan so the world point stays under the mouse
-            setPan({
-                x: mouseX - worldX * newZoom,
-                y: mouseY - worldY * newZoom,
-            });*/
+        // return the new zoom for setter
+        return zoomNew;
+    }, [svgRef, screenToWorldCalculation, pan]);
 
-            return newZoom;
-        });
-        // setZoom(z => Math.min(4, Math.max(0.25, z * (e.deltaY < 0 ? 1.1 : 0.9))));
-    }, [pan]);
+    const onWheel = useCallback((e: React.WheelEvent) => {
+        zoomSet(zoomNow => zoomChange(e, zoomNow, e.deltaY < 0));
+    }, [zoomChange]);
 
     /** =========================
      * Keyboard
@@ -336,7 +369,7 @@ export function GraphEditor({height, graph, saveDataSave}: GraphEditorProps) {
                     const va = graph.vertexGet(activeEdge.x);
                     const vb = graph.vertexGet(activeEdge.y);
                     if (va && vb) graph.edgeRemove(va, vb);
-                    setActiveEdge(null);
+                    activeEdgeSet(null);
                 }
             }
             // "e": toggle edges in selection
@@ -369,6 +402,15 @@ export function GraphEditor({height, graph, saveDataSave}: GraphEditorProps) {
 
                         if(!graph.edgeHas(from, to)) graph.edgeAdd(from, to);
                     }
+                }
+                updateSet(new Date());
+            }
+            // "d": disable selection
+            else if (e.key === "d") {
+                for(const vId of activeVertices) {
+                    const vertex = graph.vertexGet(vId);
+                    if(!vertex) continue;
+                    vertex.disabled = !vertex.disabled;
                 }
                 updateSet(new Date());
             }
@@ -413,7 +455,7 @@ export function GraphEditor({height, graph, saveDataSave}: GraphEditorProps) {
                         strokeDasharray={lineStyle.type === "dashed" ? "6,4" : lineStyle.type === "dotted" ? "2,4" : undefined}
                         onClick={e => {
                             if (e.button !== 0) return;
-                            setActiveEdge(new Vector2(v.id, nId));
+                            activeEdgeSet(new Vector2(v.id, nId));
                             activeVerticesSet([]);
                             e.stopPropagation();
                         }}
@@ -431,7 +473,7 @@ export function GraphEditor({height, graph, saveDataSave}: GraphEditorProps) {
                         strokeDasharray={lineStyle.type === "dashed" ? "6,4" : lineStyle.type === "dotted" ? "2,4" : undefined}
                         onClick={e => {
                             if (e.button !== 0) return;
-                            setActiveEdge(new Vector2(v.id, nId));
+                            activeEdgeSet(new Vector2(v.id, nId));
                             activeVerticesSet([]);
                             e.stopPropagation();
                         }}
@@ -471,8 +513,8 @@ export function GraphEditor({height, graph, saveDataSave}: GraphEditorProps) {
                            if(!active) activeVerticesSet([v.id]);
                        }
 
-                       setActiveEdge(null);
-                       setDragVertex(v.id);
+                       activeEdgeSet(null);
+                       dragVertexSet(v.id);
 
                        e.stopPropagation();
                        e.preventDefault();
@@ -481,17 +523,19 @@ export function GraphEditor({height, graph, saveDataSave}: GraphEditorProps) {
                     <circle
                         cx={v.position.x}
                         cy={v.position.y}
-                        r={16}
+                        r={vertexRadius}
                         fill={v.color}
                         stroke={active ? 'orange' : v.lineStyle.color}
                         strokeWidth={weightToWidth[lineStyle.weight]}
-                        strokeDasharray={lineStyle.type === "dashed" ? "6,4" : lineStyle.type === "dotted" ? "2,4" : undefined}
+                        strokeDasharray={v.disabled || lineStyle.type === "dashed" ? "6,4" : lineStyle.type === "dotted" ? "2,4" : undefined}
                     />
                     <text
                         className="select-none"
-                        x={v.position.x - 4}
-                        y={v.position.y + 4}
+                        x={v.position.x}
+                        y={v.position.y}
                         fontSize={14}
+                        textAnchor="middle"
+                        dominantBaseline="middle"
                     >
                         {v.label ? `${v.id}:${v.label}` : v.id}
                     </text>
@@ -509,16 +553,16 @@ export function GraphEditor({height, graph, saveDataSave}: GraphEditorProps) {
         <div className="flex flex-col border-t" style={{height: height+"vh"}}>
             <div className="flex gap-2 p-2 border-b border-transparent">
                 <button type="button" className={buttonClass}
-                        onClick={() => setZoom(Math.max(0.25, zoom / 1.2))}>-
+                        onClick={() => zoomSet(z => zoomChange(undefined, z, false))}>-
                 </button>
                 <button type="button" className={buttonClass}
-                        onClick={() => setZoom(1)}>{Math.round(zoom * 100)}%
+                        onClick={() => zoomSet(1)}>{Math.round(zoom * 100)}%
                 </button>
                 <button type="button" className={buttonClass}
-                        onClick={() => setZoom(Math.min(2, zoom * 1.2))}>+
+                        onClick={() => zoomSet(z => zoomChange(undefined, z, true))}>+
                 </button>
                 <button type="button" className={buttonClass}
-                        onClick={() => setPan({x: 0, y: 0})}>Reset Pan
+                        onClick={() => panSet(new Vector2(0,0))}>Reset Pan
                 </button>
 
                 <span className="text-xs">Last save: {graph?.savedLast.replace('T', ' ')}</span>
@@ -545,6 +589,29 @@ export function GraphEditor({height, graph, saveDataSave}: GraphEditorProps) {
                     {renderEdges()}
                     {renderVertices()}
                 </g>
+
+                {/* mouse position */ <text
+                    x={10}
+                    y="100%"
+                    dy={-10}
+                    fontSize={12}
+                    fill="#333"
+                    pointerEvents="none"
+                >
+                    {`${screenToWorld(lastMouse).toStringFraction(0)}`}
+                </text>}
+
+                {/* box select */ boxSelect && <rect
+                    x={Math.min(boxSelect.from.x, boxSelect.to.x)}
+                    y={Math.min(boxSelect.from.y, boxSelect.to.y)}
+                    width={Math.abs(boxSelect.to.x - boxSelect.from.x)}
+                    height={Math.abs(boxSelect.to.y - boxSelect.from.y)}
+                    fill="transparent"
+                    stroke="#555"
+                    strokeWidth={1}
+                    strokeDasharray="6,4"
+                    pointerEvents="none"
+                />}
             </svg>
         </div>
     );

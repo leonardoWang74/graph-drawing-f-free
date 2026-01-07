@@ -120,7 +120,7 @@ export default class Graph {
         // found enough vertices - add to preliminary list of subgraph
         if(foundIDs.length >= subgraphDegreesDesc.length) {
             // create subgraph
-            const subgraphFound = this.getSubgraphArray(foundIDs);
+            const subgraphFound = this.getSubgraph(foundIDs);
 
             // degrees don't match - discard
             if(!ArrayEquals(subgraphDegreesDesc, subgraphFound.getDegreesDescending(true))) return;
@@ -259,7 +259,7 @@ export default class Graph {
 
             // find first vertex that could have more neighbors (not the first, since that is always fulfilled)
             const verticesByDegreeDescending: Vertex[] = [];
-            const subgraphFound = this.getSubgraphArray(foundIDs);
+            const subgraphFound = this.getSubgraph(foundIDs);
 
             // get degrees in the currently found subgraph
             for(const vertex of subgraphFound.vertices.values()) {
@@ -413,34 +413,30 @@ export default class Graph {
                 }
             }
 
-            components.push(this.getSubgraphArray(ids));
+            components.push(this.getSubgraph(ids));
         }
 
         return components;
     }
 
+    /** get a subgraph of this graph without disabled vertices */
+    public getSubgraphWithoutDisabled(): Graph {
+        const nonDisabled: number[] = [];
+        for(const vertex of this.vertices.values()) {
+            if(vertex.disabled) continue;
+            nonDisabled.push(vertex.id);
+        }
+        return this.getSubgraph(nonDisabled);
+    }
+
     /** get a subgraph (reduced set of vertices, with the same edges). Creates new vertices with the same IDs (doesn't use the same vertex objects) */
-    public getSubgraphArray(vertices: number[]): Graph {
+    public getSubgraph(vertices: number[]): Graph {
         const graph = new Graph();
 
         for(const vertex of this.vertices.values()) {
             if(!vertices.includes(vertex.id)) continue;
             const v = vertex.clone();
             v.subgraphFilterArray(vertices);
-            graph.vertexAdd(v);
-        }
-
-        return graph;
-    }
-
-    /** get a subgraph (reduced set of vertices, with the same edges). Creates new vertices with the same IDs (doesn't use the same vertex objects) */
-    public getSubgraph(vertices: Set<number>): Graph {
-        const graph = new Graph();
-
-        for(const vertex of this.vertices.values()) {
-            if(!vertices.has(vertex.id)) continue;
-            const v = vertex.clone();
-            v.subgraphFilter(vertices);
             graph.vertexAdd(v);
         }
 
