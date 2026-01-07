@@ -18,7 +18,7 @@ export type LineWeight = "thin" | "normal" | "heavy" | "fat";
 
 export function LineStyleDefault(): LineStyle {
     return {
-        color: "black",
+        color: "#00000029",
         weight: "normal",
         type: "solid"
     };
@@ -441,6 +441,41 @@ export default class Graph {
         }
 
         return graph;
+    }
+
+    /** add a `subgraph` to this graph. The vertices are placed at `targetPosition` + vertex.originalPosition - `referencePosition`  */
+    public addSubgraph(subgraph: Graph, referencePosition: Vector2, targetPosition: Vector2): number[] {
+        const insertedVertices: number[] = [];
+        const bijection: Map<number, number> = new Map<number, number>();
+
+        // copy vertices, save IDs in the bijection
+        for(const original of subgraph.vertices.values()) {
+            const v = Vertex.VertexFromData(original.VertexToData());
+            v.id = -1;
+            v.position = new Vector2(
+                targetPosition.x + original.position.x - referencePosition.x,
+                targetPosition.y + original.position.y - referencePosition.y
+            );
+
+            this.vertexAdd(v);
+            insertedVertices.push(v.id);
+            bijection.set(original.id, v.id);
+        }
+
+        // add edges: the same as the original
+        for(const fromOriginal of subgraph.vertices.values()) {
+            for (const toOriginal of fromOriginal.neighbors) {
+                if(fromOriginal.id >= toOriginal) continue;
+
+                const from = this.vertexGet(bijection.get(fromOriginal.id) ?? -1);
+                const to = this.vertexGet(bijection.get(toOriginal) ?? -1);
+                if(!from || !to) continue;
+
+                this.edgeAdd(from, to);
+            }
+        }
+
+        return insertedVertices;
     }
 
     /** get the degrees of all vertices sorted ascending (choose to include `duplicates` or not) */

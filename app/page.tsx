@@ -4,6 +4,8 @@ import React, {JSX, useCallback, useEffect, useRef, useState} from "react";
 import Graph, {GraphData, LineStyle, LineStyleDefault, weightToWidth} from "@/app/data/Graph";
 import {Vertex} from "@/app/data/Vertex";
 import Vector2 from "@/app/data/Vector2";
+import {DateToLocalWithTime} from "@/app/util/DateUtils";
+import {ArrayEquals} from "@/app/util/ArrayUtils";
 
 export interface SaveData {
     graphIdActive: number;
@@ -117,10 +119,14 @@ export default function GraphWindow() {
         console.log('################################################');
         console.log('################################################');
 
+        const forbiddenStyle = LineStyleDefault();
+        forbiddenStyle.color = '#ff0000A0'
+
         // change "red" colors in the graph to black
+        const lineStyleDefault = LineStyleDefault();
         for(const map of graph.edgeStyle.values()) {
             for(const style of map.values()) {
-                if(style.color === 'red') style.color = 'black';
+                if(style.color === forbiddenStyle.color) style.color = lineStyleDefault.color;
             }
         }
 
@@ -130,7 +136,7 @@ export default function GraphWindow() {
                 for(const v2 of v.neighbors) {
                     if(!graph.edgeStyle.has(v.id)) graph.edgeStyle.set(v.id, new Map<number, LineStyle>());
                     const currentStyle = graph.edgeStyle.get(v.id)?.get(v2) ?? LineStyleDefault();
-                    currentStyle.color = 'red';
+                    currentStyle.color = forbiddenStyle.color;
                     graph.edgeStyle.get(v.id)?.set(v2, currentStyle);
                 }
             }
@@ -166,23 +172,38 @@ interface BoxSelectionData {
     to: Vector2;
 }
 
+interface ClipboardData {
+    graph: Graph;
+    mouseWorld: Vector2;
+}
+
+interface PointerData {
+    screen: Vector2;
+}
+
+interface ViewData {
+    zoom: number;
+    pan: Vector2;
+}
+
 export function GraphEditor({height, graph, saveDataSave}: GraphEditorProps) {
-    const [_, updateSet] = useState<Date>();
+    const [update, updateSet] = useState<Date>();
 
     const svgRef = useRef<SVGSVGElement | null>(null);
+    const worldRef = useRef<SVGGElement | null>(null);
 
-    const [pan, panSet] = useState<Vector2>(new Vector2(0, 0));
-    const [zoom, zoomSet] = useState(1);
+    const [view, viewSet] = useState<ViewData>({zoom: 1, pan: new Vector2(0,0)});
     const [panning, panningSet] = useState<PanningData>();
-    const [lastMouse, lastMouseSet] = useState<Vector2>(new Vector2(0,0));
+    const [mouseLast, mouseLastSet] = useState<PointerData>({screen: new Vector2(0,0)});
 
     const [activeVertices, activeVerticesSet] = useState<number[]>([]);
-
-    // const [activeVertex, setActiveVertex] = useState<number>();
-    const [activeEdge, activeEdgeSet] = useState<Vector2>();
     const [dragVertex, dragVertexSet] = useState<number>();
 
+    const [activeEdge, activeEdgeSet] = useState<Vector2>();
+
     const [boxSelect, boxSelectSet] = useState<BoxSelectionData>();
+
+    const [clipboard, clipboardSet] = useState<ClipboardData>();
 
     /** =========================
      * Utilities
@@ -192,8 +213,8 @@ export function GraphEditor({height, graph, saveDataSave}: GraphEditorProps) {
     },[]);
 
     const screenToWorld = useCallback((pos: Vector2) => {
-        return screenToWorldCalculation(pan, zoom, pos);
-    },[pan, zoom, screenToWorldCalculation]);
+        return screenToWorldCalculation(view.pan, view.zoom, pos);
+    },[view, screenToWorldCalculation]);
 
     const getMousePositionScreen = useCallback((e: React.MouseEvent) => {
         const rect = svgRef.current!.getBoundingClientRect();
@@ -205,9 +226,16 @@ export function GraphEditor({height, graph, saveDataSave}: GraphEditorProps) {
         return screenToWorld(screenPos);
     },[screenToWorld, getMousePositionScreen]);
 
-    /** =========================
-     * Canvas interactions
-     * ========================= */
+    ///////////////////////////////////////////////////
+    // region canvas interactions
+    const updateTransform = useCallback((view: ViewData) => {
+        if (!worldRef.current || !('setAttribute' in worldRef.current)) return;
+        worldRef.current.setAttribute(
+            "transform",
+            `translate(${view.pan.x}, ${view.pan.y}) scale(${view.zoom})`
+        );
+    }, []);
+
     const onMouseDownCanvas = useCallback((e: React.MouseEvent) => {
         // left click on canvas = box select / deselect
         if (e.button === 0) {
@@ -225,19 +253,20 @@ export function GraphEditor({height, graph, saveDataSave}: GraphEditorProps) {
         }
         // middle click = pan
         else if (e.button === 1) {
-            panningSet({panStart: pan, mouseStart: new Vector2(e.clientX, e.clientY)});
+            panningSet({panStart: view.pan, mouseStart: new Vector2(e.clientX, e.clientY)});
         }
-    }, [pan, getMousePositionScreen, activeVertices]);
+    }, [view, getMousePositionScreen, activeVertices]);
 
     const onMouseMove = useCallback((e: React.MouseEvent) => {
         if (!graph) return;
 
         // pan view
         if (panning) {
-            panSet(new Vector2(
+            view.pan = new Vector2(
                 panning.panStart.x + e.clientX - panning.mouseStart.x,
                 panning.panStart.y + e.clientY - panning.mouseStart.y
-            ));
+            );
+            updateTransform(view);
         }
 
         // box select: move end point
@@ -269,7 +298,12 @@ export function GraphEditor({height, graph, saveDataSave}: GraphEditorProps) {
                     active.push(vertex.id);
                 }
             }
-            activeVerticesSet(active);
+
+            if(!ArrayEquals(activeVertices, active)) {
+                activeVerticesSet(active);
+                updateSet(new Date());
+            }
+            // boxSelectSet({...boxSelect, to: getMousePositionScreen(e)});
         }
 
         // move active vertex
@@ -289,8 +323,9 @@ export function GraphEditor({height, graph, saveDataSave}: GraphEditorProps) {
             }
         }
 
-        lastMouseSet( new Vector2(e.clientX, e.clientY));
-    }, [panning, lastMouse, dragVertex, graph, getMousePositionScreen, getMousePositionWorld, activeVertices, boxSelect]);
+        // mouseLast.screen = getMousePositionScreen(e);
+        mouseLastSet({...mouseLast, screen: getMousePositionScreen(e)});
+    }, [panning, view, mouseLast, dragVertex, graph, getMousePositionScreen, getMousePositionWorld, activeVertices, boxSelect]);
 
     const onMouseUp = useCallback((_: React.MouseEvent) => {
         if (!graph) return;
@@ -305,18 +340,12 @@ export function GraphEditor({height, graph, saveDataSave}: GraphEditorProps) {
     const onDoubleClick = useCallback((e: React.MouseEvent) => {
         if (!graph || activeVertices.length>0 || activeEdge) return;
 
-        const pos = getMousePositionWorld(e);
-        const v = Vertex.Vertex(pos);
-        graph.vertexAdd(v);
+        graph.vertexAdd(Vertex.Vertex(getMousePositionWorld(e)));
 
         updateSet(new Date());
         saveDataSave();
     }, [getMousePositionWorld, graph, updateSet, saveDataSave, activeVertices]);
 
-
-    /** =========================
-     * Zoom
-     * ========================= */
     const zoomChange = useCallback((e: React.MouseEvent|undefined, zoomNow: number, zoomIn: boolean) => {
         // different deltas depending on the current zoom
         let delta = 0.25;
@@ -334,27 +363,39 @@ export function GraphEditor({height, graph, saveDataSave}: GraphEditorProps) {
         const screenY = e ? e.clientY - rect.top : rect.height / 2;
 
         // screenToWorldCalculation(pan, zoom, x, y) = new Vector2((x - pan.x) / zoom, (y - pan.y) / zoom);
-        const screenCenterNow = screenToWorldCalculation(pan, zoomNow, new Vector2(screenX, screenY));
+        const screenCenterNow = screenToWorldCalculation(view.pan, zoomNow, new Vector2(screenX, screenY));
 
         // screenCenterNew = screenToWorldCalculation(panNew, zoomNew, x,y) = new Vector2((x - panNew.x) / zoomNew, (y - panNew.y) / zoomNew);
         // solving for panNew.x: (x - panNew.x) / zoomNew = screenCenterNow.x
         // solving for panNew.x: panNew.x = x - screenCenterNow * zoomNew
-        panSet(new Vector2(screenX - screenCenterNow.x * zoomNew, screenY - screenCenterNow.y * zoomNew));
-
-        // return the new zoom for setter
-        return zoomNew;
-    }, [svgRef, screenToWorldCalculation, pan]);
+        viewSet({...view,
+            zoom: zoomNew,
+            pan: new Vector2(screenX - screenCenterNow.x * zoomNew, screenY - screenCenterNow.y * zoomNew)
+        });
+    }, [svgRef, screenToWorldCalculation, view]);
 
     const onWheel = useCallback((e: React.WheelEvent) => {
-        zoomSet(zoomNow => zoomChange(e, zoomNow, e.deltaY < 0));
-    }, [zoomChange]);
+        zoomChange(e, view.zoom, e.deltaY < 0);
+    }, [zoomChange, view]);
 
-    /** =========================
-     * Keyboard
-     * ========================= */
+    // endregion canvas interactions
+
+    ///////////////////////////////////////////////////
+    // region keyboard
+
+    const keyboardFunctionEdgesToggle = useCallback((graph: Graph, from: Vertex, to: Vertex) => {
+        if(graph.edgeHas(from, to)) graph.edgeRemove(from, to);
+        else graph.edgeAdd(from, to);
+    }, []);
+    const keyboardFunctionEdgesAdd = useCallback((graph: Graph, from: Vertex, to: Vertex) => {
+        console.log('adding edges function', from, to)
+        if(!graph.edgeHas(from, to)) graph.edgeAdd(from, to);
+    }, []);
+
     useEffect(() => {
         const onKey = (e: KeyboardEvent) => {
             if (!graph) return;
+            console.log(e.key, e.ctrlKey, e.shiftKey)
 
             // delete currently selected vertices / edges
             if (e.key === "Delete" || e.key === "x") {
@@ -372,25 +413,70 @@ export function GraphEditor({height, graph, saveDataSave}: GraphEditorProps) {
                     activeEdgeSet(null);
                 }
             }
-            // "e": toggle edges in selection
-            else if (e.key === "e") {
-                for(const fromId of activeVertices) {
-                    const from = graph.vertexGet(fromId);
-                    if(!from) continue;
-
-                    for(const toId of activeVertices) {
-                        if(fromId >= toId) continue;
-                        const to = graph.vertexGet(toId);
-                        if(!to) continue;
-
-                        if(graph.edgeHas(from, to)) graph.edgeRemove(from, to);
-                        else graph.edgeAdd(from, to);
-                    }
-                }
-                updateSet(new Date());
+            // clear selection
+            else if (e.key === "Escape") {
+                activeVerticesSet([]);
+                activeEdgeSet(undefined);
             }
-            // "f": add edges in selection
-            else if (e.key === "f") {
+            // copy
+            else if (e.key === "c") {
+                if(e.ctrlKey) {
+                    clipboardSet({
+                        graph: graph.getSubgraph(activeVertices),
+                        mouseWorld: screenToWorld(mouseLast.screen),
+                    });
+                    e.preventDefault();
+                }
+            }
+            // paste / add vertex
+            else if (e.key === "v") {
+                if(e.ctrlKey) {
+                    if(clipboard) {
+                        const insertedIDs = graph.addSubgraph(clipboard.graph, clipboard.mouseWorld, screenToWorld(mouseLast.screen));
+                        activeVerticesSet(insertedIDs);
+
+                        updateSet(new Date());
+                        e.preventDefault();
+                    }
+                }
+                // add vertex
+                else {
+                    const v = graph.vertexAdd(Vertex.Vertex(screenToWorld(mouseLast.screen)));
+                    console.log("added vertex with position: ", v.position)
+
+                    updateSet(new Date());
+                    e.preventDefault();
+                }
+            }
+            // "e": toggle/add edges in selection
+            else if (e.key === "e" || e.key === "E") {
+                let pairFunction: (g: Graph, f: Vertex, t: Vertex) => void;
+
+                // Ctrl+Shift+E: add edges the last selected vertex
+                if(e.shiftKey && e.ctrlKey) {
+                    const last = activeVertices.length>0 ? activeVertices[activeVertices.length-1] : -1;
+                    pairFunction = (g: Graph, from: Vertex, to: Vertex) => {
+                        if(to.id !== last && from.id!==last) return;
+                        keyboardFunctionEdgesAdd(g, from, to);
+                    };
+                }
+                // Ctrl+E: toggle edges the last selected vertex
+                else if(e.ctrlKey) {
+                    const last = activeVertices.length>0 ? activeVertices[activeVertices.length-1] : -1;
+                    pairFunction = (g: Graph, from: Vertex, to: Vertex) => {
+                        if(to.id !== last && from.id!==last) return;
+                        keyboardFunctionEdgesToggle(g, from, to);
+                    };
+                }
+                // Shift+E: add edges in selection
+                else if(e.shiftKey) {
+                    pairFunction = keyboardFunctionEdgesAdd;
+                }
+                // E: toggle edges in selection
+                else {
+                    pairFunction = keyboardFunctionEdgesToggle;
+                }
+
                 for(const fromId of activeVertices) {
                     const from = graph.vertexGet(fromId);
                     if(!from) continue;
@@ -400,10 +486,12 @@ export function GraphEditor({height, graph, saveDataSave}: GraphEditorProps) {
                         const to = graph.vertexGet(toId);
                         if(!to) continue;
 
-                        if(!graph.edgeHas(from, to)) graph.edgeAdd(from, to);
+                        pairFunction(graph, from, to);
                     }
                 }
+
                 updateSet(new Date());
+                e.preventDefault();
             }
             // "d": disable selection
             else if (e.key === "d") {
@@ -413,167 +501,66 @@ export function GraphEditor({height, graph, saveDataSave}: GraphEditorProps) {
                     vertex.disabled = !vertex.disabled;
                 }
                 updateSet(new Date());
+                e.preventDefault();
             }
 
             saveDataSave();
         };
         window.addEventListener("keydown", onKey);
         return () => window.removeEventListener("keydown", onKey);
-    }, [activeVertices, activeEdge, graph, saveDataSave]);
+    }, [activeVertices, activeEdge, graph, saveDataSave, screenToWorld, mouseLast, clipboard,
+        keyboardFunctionEdgesAdd, keyboardFunctionEdgesToggle]);
+    // endregion keyboard
 
-    /** =========================
-     * Rendering helpers
-     * ========================= */
+    const edgeClick = useCallback((e: React.MouseEvent, fromId: number, toid: number) => {
+        if (e.button !== 0) return;
+        activeEdgeSet(new Vector2(fromId, toid));
+        activeVerticesSet([]);
+        e.stopPropagation();
+    }, []);
 
-    const renderEdges = useCallback(() => {
-        if (!graph) return;
+    const vertexClick = useCallback((e: React.MouseEvent, v: Vertex, active: boolean) => {
+        if (e.button !== 0) return;
 
-        const lines: JSX.Element[] = [];
-
-        for (const v of graph.vertices.values()) {
-            for (const nId of v.neighbors) {
-                if(v.id >= nId) continue;
-                const key = v.id+"-"+nId;
-
-                const n = graph.vertexGet(nId);
-                if(!n) continue;
-
-                const active = activeEdge && (
-                    (v.id === activeEdge.x && nId === activeEdge.y)
-                    || (v.id === activeEdge.y && nId === activeEdge.x)
-                );
-                const lineStyle = graph.edgeStyle.get(v.id)?.get(nId) ?? LineStyleDefault();
-                lines.push(
-                    <line
-                        key={key+"-bg"}
-                        x1={v.position.x}
-                        y1={v.position.y}
-                        x2={n.position.x}
-                        y2={n.position.y}
-                        stroke={active ? 'orange' : '#ffffff09'}
-                        strokeWidth={(active ? 6 : 16) + weightToWidth[lineStyle.weight]}
-                        strokeDasharray={lineStyle.type === "dashed" ? "6,4" : lineStyle.type === "dotted" ? "2,4" : undefined}
-                        onClick={e => {
-                            if (e.button !== 0) return;
-                            activeEdgeSet(new Vector2(v.id, nId));
-                            activeVerticesSet([]);
-                            e.stopPropagation();
-                        }}
-                    />
-                );
-                lines.push(
-                    <line
-                        key={key}
-                        x1={v.position.x}
-                        y1={v.position.y}
-                        x2={n.position.x}
-                        y2={n.position.y}
-                        stroke={lineStyle.color}
-                        strokeWidth={weightToWidth[lineStyle.weight]}
-                        strokeDasharray={lineStyle.type === "dashed" ? "6,4" : lineStyle.type === "dotted" ? "2,4" : undefined}
-                        onClick={e => {
-                            if (e.button !== 0) return;
-                            activeEdgeSet(new Vector2(v.id, nId));
-                            activeVerticesSet([]);
-                            e.stopPropagation();
-                        }}
-                    />
-                );
+        if(e.shiftKey) {
+            if(!active) activeVerticesSet(cv => [...cv, v.id]);
+            else {
+                activeVerticesSet(cv => {
+                    const copy = [...cv];
+                    const index = copy.indexOf(v.id);
+                    if(index>=0) {
+                        copy.splice(index, 1);
+                    }
+                    return copy
+                });
             }
         }
-        return lines;
-    }, [graph, activeEdge]);
-
-    const renderVertices = useCallback(() => {
-        if (!graph) return;
-
-        const nodes: JSX.Element[] = [];
-        for (const v of graph.vertices.values()) {
-            const active = activeVertices.includes(v.id);
-            const lineStyle = v.lineStyle ?? LineStyleDefault();
-            nodes.push(
-                <g key={v.id}
-                   onMouseDown={e => {
-                       if (e.button !== 0) return;
-
-                       if(e.shiftKey) {
-                           if(!active) activeVerticesSet(cv => [v.id, ...cv]);
-                           else {
-                               activeVerticesSet(cv => {
-                                   const copy = [...cv];
-                                   const index = copy.indexOf(v.id);
-                                   if(index>=0) {
-                                       copy.splice(index, 1);
-                                   }
-                                   return copy
-                               });
-                           }
-                       }
-                       else {
-                           if(!active) activeVerticesSet([v.id]);
-                       }
-
-                       activeEdgeSet(null);
-                       dragVertexSet(v.id);
-
-                       e.stopPropagation();
-                       e.preventDefault();
-                   }}
-                >
-                    <circle
-                        cx={v.position.x}
-                        cy={v.position.y}
-                        r={vertexRadius}
-                        fill={v.color}
-                        stroke={active ? 'orange' : v.lineStyle.color}
-                        strokeWidth={weightToWidth[lineStyle.weight]}
-                        strokeDasharray={v.disabled || lineStyle.type === "dashed" ? "6,4" : lineStyle.type === "dotted" ? "2,4" : undefined}
-                    />
-                    <text
-                        className="select-none"
-                        x={v.position.x}
-                        y={v.position.y}
-                        fontSize={14}
-                        textAnchor="middle"
-                        dominantBaseline="middle"
-                    >
-                        {v.label ? `${v.id}:${v.label}` : v.id}
-                    </text>
-                </g>
-            );
+        else {
+            if(!active) activeVerticesSet([v.id]);
         }
-        return nodes;
-    }, [graph, activeVertices]);
 
-    /** =========================
-     * UI
-     * ========================= */
+        activeEdgeSet(null);
+        dragVertexSet(v.id);
+
+        e.stopPropagation();
+        e.preventDefault();
+    }, []);
 
     return (
         <div className="flex flex-col border-t" style={{height: height+"vh"}}>
             <div className="flex gap-2 p-2 border-b border-transparent">
                 <button type="button" className={buttonClass}
-                        onClick={() => zoomSet(z => zoomChange(undefined, z, false))}>-
+                        onClick={() => zoomChange(undefined, view.zoom, false)}>-
                 </button>
                 <button type="button" className={buttonClass}
-                        onClick={() => zoomSet(1)}>{Math.round(zoom * 100)}%
+                        onClick={() => viewSet({...view, zoom: 1})}>{Math.round(view.zoom * 100)}%
                 </button>
                 <button type="button" className={buttonClass}
-                        onClick={() => zoomSet(z => zoomChange(undefined, z, true))}>+
+                        onClick={() => zoomChange(undefined, view.zoom, true)}>+
                 </button>
                 <button type="button" className={buttonClass}
-                        onClick={() => panSet(new Vector2(0,0))}>Reset Pan
+                        onClick={() => viewSet({...view, pan: new Vector2(0,0)})}>Reset Pan
                 </button>
-
-                <span className="text-xs">Last save: {graph?.savedLast.replace('T', ' ')}</span>
-
-                {/*<button onClick={() => setEdgeStyle(s => ({ ...s, style: "solid" }))}>Solid</button>
-          <button onClick={() => setEdgeStyle(s => ({ ...s, style: "dashed" }))}>Dashed</button>
-          <button onClick={() => setEdgeStyle(s => ({ ...s, style: "dotted" }))}>Dotted</button>
-          <button onClick={() => setEdgeStyle(s => ({ ...s, weight: "thin" }))}>Thin</button>
-          <button onClick={() => setEdgeStyle(s => ({ ...s, weight: "normal" }))}>Normal</button>
-          <button onClick={() => setEdgeStyle(s => ({ ...s, weight: "heavy" }))}>Heavy</button>
-          <button onClick={() => setEdgeStyle(s => ({ ...s, weight: "fat" }))}>Fat</button>*/}
             </div>
 
             <svg
@@ -585,20 +572,46 @@ export function GraphEditor({height, graph, saveDataSave}: GraphEditorProps) {
                 onDoubleClick={onDoubleClick}
                 onWheel={onWheel}
             >
-                <g transform={`translate(${pan.x}, ${pan.y}) scale(${zoom})`}>
-                    {renderEdges()}
-                    {renderVertices()}
+                <g ref={worldRef} transform={`translate(${view.pan.x}, ${view.pan.y}) scale(${view.zoom})`}>
+                    <GraphRender graph={graph}
+                                 activeVertices={activeVertices}
+                                 edgeClick={edgeClick}
+                                 vertexClick={vertexClick}
+
+                                 update={update}
+                    />
                 </g>
 
                 {/* mouse position */ <text
-                    x={10}
-                    y="100%"
-                    dy={-10}
+                    className="select-none"
+                    x={10} y="100%" dy={-10}
                     fontSize={12}
                     fill="#333"
                     pointerEvents="none"
                 >
-                    {`${screenToWorld(lastMouse).toStringFraction(0)}`}
+                    {`${screenToWorld(mouseLast.screen).toStringFraction(0)}`}
+                </text>}
+
+                {/* Clipboard info */ <text
+                    className="select-none"
+                    x="100%" y="100%" dx={-10} dy={-24}
+                    fontSize={10}
+                    fill="#333"
+                    pointerEvents="none"
+                    textAnchor="end" dominantBaseline="bottom"
+                >
+                    Clipboard: {clipboard ? clipboard.graph.n() + ' Vertices' : 'Empty'}<br/>
+                </text>}
+
+                {/* last save */ graph?.savedLast && <text
+                    className="select-none"
+                    x="100%" y="100%" dx={-10} dy={-10}
+                    fontSize={10}
+                    fill="#333"
+                    pointerEvents="none"
+                    textAnchor="end" dominantBaseline="bottom"
+                >
+                    Last save: {DateToLocalWithTime(new Date(graph.savedLast))}
                 </text>}
 
                 {/* box select */ boxSelect && <rect
@@ -616,3 +629,108 @@ export function GraphEditor({height, graph, saveDataSave}: GraphEditorProps) {
         </div>
     );
 }
+
+const GraphRender = React.memo(function GraphVerticesAndEdges(props: {
+    graph: Graph,
+    activeEdge?: Vector2,
+    activeVertices: number[],
+    update?: Date,
+
+    edgeClick: (e: React.MouseEvent, fromId: number, toId: number) => void,
+    vertexClick: (e: React.MouseEvent, vertex: Vertex, active: boolean) => void,
+}) {
+    // console.log('graph re-render')
+
+    const renderEdges = useCallback((graph: Graph) => {
+        if (!graph) return;
+        const activeEdge = props.activeEdge;
+        const activeVertices = props.activeVertices;
+
+        const lines: JSX.Element[] = [];
+
+        for (const v of graph.vertices.values()) {
+            for (const nId of v.neighbors) {
+                if(v.id >= nId) continue;
+                const key = v.id+"-"+nId;
+
+                const n = graph.vertexGet(nId);
+                if(!n) continue;
+
+                const active = activeEdge && (
+                    (v.id === activeEdge.x && nId === activeEdge.y)
+                    || (v.id === activeEdge.y && nId === activeEdge.x)
+                );
+
+                const fromActive = activeVertices.includes(v.id);
+                const toActive = activeVertices.includes(nId);
+                const endpointActive = fromActive || toActive;
+                const endpointBothActive = fromActive && toActive;
+
+                const lineStyle = graph.edgeStyle.get(v.id)?.get(nId) ?? LineStyleDefault();
+                lines.push(
+                    <line
+                        key={key+"-bg"}
+                        x1={v.position.x} y1={v.position.y}
+                        x2={n.position.x} y2={n.position.y}
+                        stroke={active ? 'orange' : '#ffffff02'}
+                        strokeWidth={(active ? 0 : 16) + weightToWidth[lineStyle.weight]}
+                        strokeDasharray={lineStyle.type === "dashed" ? "6,4" : lineStyle.type === "dotted" ? "2,4" : undefined}
+                        onClick={e => props.edgeClick(e, v.id, nId)}
+                    />
+                );
+                lines.push(
+                    <line
+                        key={key}
+                        x1={v.position.x} y1={v.position.y}
+                        x2={n.position.x} y2={n.position.y}
+                        stroke={endpointActive ? '#9024dc' + (endpointBothActive ? 'ff' : '90') : lineStyle.color}
+                        strokeWidth={(endpointBothActive ? 2.5 : 0) + weightToWidth[lineStyle.weight]}
+                        strokeDasharray={lineStyle.type === "dashed" ? "6,4" : lineStyle.type === "dotted" ? "2,4" : undefined}
+                        onClick={e => props.edgeClick(e, v.id, nId)}
+                    />
+                );
+            }
+        }
+        return lines;
+    }, [props.activeEdge, props.activeVertices]);
+
+    const renderVertices = useCallback((graph: Graph) => {
+        if (!graph) return;
+        const activeVertices = props.activeVertices;
+
+        const nodes: JSX.Element[] = [];
+        for (const v of graph.vertices.values()) {
+            const active = activeVertices.includes(v.id);
+            const lineStyle = v.lineStyle ?? LineStyleDefault();
+            nodes.push(
+                <g key={v.id}
+                   onMouseDown={e => props.vertexClick(e, v, active)}
+                >
+                    <circle
+                        cx={v.position.x} cy={v.position.y}
+                        r={vertexRadius}
+                        fill={v.color}
+                        stroke={active ? 'orange' : v.lineStyle.color}
+                        strokeWidth={weightToWidth[lineStyle.weight]}
+                        strokeDasharray={v.disabled || lineStyle.type === "dashed" ? "6,4" : lineStyle.type === "dotted" ? "2,4" : undefined}
+                    />
+                    <text
+                        className="select-none"
+                        x={v.position.x} y={v.position.y}
+                        fontSize={14}
+                        textAnchor="middle"
+                        dominantBaseline="middle"
+                    >
+                        {v.label ? `${v.id}:${v.label}` : v.id}
+                    </text>
+                </g>
+            );
+        }
+        return nodes;
+    }, [props.activeVertices]);
+
+    return <>
+        {renderEdges(props.graph)}
+        {renderVertices(props.graph)}
+    </>
+})
