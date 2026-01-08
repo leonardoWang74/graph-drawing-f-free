@@ -147,10 +147,7 @@ export default function GraphWindow() {
         // change "red" colors in the graph to black
         const lineStyleDefault = LineStyleDefault();
         for(const map of graph.edgeStyle.values()) {
-            for(const [vid, style] of map.entries()) {
-                // do not remove: un-selected vertices
-                if(!activeGraph.vertices.has(vid)) continue;
-
+            for(const style of map.values()) {
                 if(style.color === forbiddenStyle.color) style.color = lineStyleDefault.color;
             }
         }
@@ -424,7 +421,7 @@ export function GraphEditor({windowType, height, graph, saveDataSave, update, up
         dragVertexSet(undefined);
     }, [graph, screenToWorld, saveDataSave, panning, boxSelect]);
 
-    const zoomChange = useCallback((e: React.MouseEvent | undefined, zoomNow: number, zoomIn: boolean) => {
+    const zoomChange = useCallback((e: React.MouseEvent | undefined, zoomNow: number, zoomIn: boolean, mouseScreenPosition?: Vector2) => {
         // different deltas depending on the current zoom
         let delta = 0.25;
         if (zoomNow <= 0.51 && !zoomIn) {
@@ -436,8 +433,8 @@ export function GraphEditor({windowType, height, graph, saveDataSave, update, up
 
         // change pan so that mouse / screen center stays at the same world position
         const rect = svgRef.current!.getBoundingClientRect();
-        const screenX = e ? e.clientX - rect.left : rect.width / 2;
-        const screenY = e ? e.clientY - rect.top : rect.height / 2;
+        const screenX = e ? e.clientX - rect.left : (mouseScreenPosition?.x ?? rect.width / 2);
+        const screenY = e ? e.clientY - rect.top : (mouseScreenPosition?.y ?? rect.height / 2);
 
         // screenToWorldCalculation(pan, zoom, x, y) = new Vector2((x - pan.x) / zoom, (y - pan.y) / zoom);
         const screenCenterNow = screenToWorldCalculation(view.pan, zoomNow, new Vector2(screenX, screenY));
@@ -453,7 +450,20 @@ export function GraphEditor({windowType, height, graph, saveDataSave, update, up
     }, [svgRef, screenToWorldCalculation, view]);
 
     const onWheel = useCallback((e: React.WheelEvent) => {
-        zoomChange(e, view.zoom, e.deltaY < 0);
+        // zoom
+        if(e.ctrlKey) zoomChange(e, view.zoom, e.deltaY < 0);
+        // pan left/right
+        else if(e.shiftKey) {
+            viewSet(v => {
+                return {...v, pan: new Vector2(v.pan.x - 0.5 * e.deltaY / Math.sqrt(v.zoom), v.pan.y)};
+            });
+        }
+        // pan up/down
+        else {
+            viewSet(v => {
+                return {...v, pan: new Vector2(v.pan.x, v.pan.y - 0.5 * e.deltaY / Math.sqrt(v.zoom))};
+            });
+        }
     }, [zoomChange, view]);
 
     // endregion canvas interactions
@@ -589,9 +599,10 @@ export function GraphEditor({windowType, height, graph, saveDataSave, update, up
         updateSet(new Date());
     }, [keyboardFunctionEdgesAdd, keyboardFunctionEdgesToggle]);
     const keyboardAddVertex = useCallback((graph: Graph) => {
-        graph.vertexAdd(Vertex.Vertex(screenToWorld(mouseLast.screen)));
+        const v = graph.vertexAdd(Vertex.Vertex(screenToWorld(mouseLast.screen)));
+        graph.activeVertices.push(v.id);
         updateSet(new Date());
-    }, []);
+    }, [mouseLast, screenToWorld]);
     const keyboardDisableSelection = useCallback((graph: Graph) => {
         for (const vId of graph.activeVertices) {
             const vertex = graph.vertexGet(vId);
@@ -690,6 +701,16 @@ export function GraphEditor({windowType, height, graph, saveDataSave, update, up
                 keyboardToggleShowOverlappingForbidden();
                 e.preventDefault();
             }
+            // "+": zoom in
+            else if (e.key === "+") {
+                zoomChange(undefined, view.zoom, true, mouseLast.screen);
+                e.preventDefault();
+            }
+            // "-": zoom in
+            else if (e.key === "-") {
+                zoomChange(undefined, view.zoom, false, mouseLast.screen);
+                e.preventDefault();
+            }
         };
         window.addEventListener("keydown", onKey);
         return () => window.removeEventListener("keydown", onKey);
@@ -744,10 +765,14 @@ export function GraphEditor({windowType, height, graph, saveDataSave, update, up
         }
 
         return overlappingForbidden.forbidden.map((g: Graph, index: number) => {
-            return <div key={index} className="border-b">
+            const ownVertices = g.vertices.values().map(v => v.id).toArray();
+            return <button key={index} className="block border-b w-full cursor" onClick={() => {
+                graph.activeVertices = ownVertices;
+                updateSet(new Date());
+            }}>
                 <span className="font-bold mr-2">{activeVerticesElements}</span>
-                <span>{g.vertices.values().filter(v => !activeVertices.includes(v.id)).map(v => v.id).toArray().join(',')}</span>
-            </div>
+                <span>{ownVertices.filter(v => !activeVertices.includes(v)).join(',')}</span>
+            </button>
         })
     }, [update, overlappingForbidden, showOverlappingForbidden])
 
@@ -773,8 +798,9 @@ export function GraphEditor({windowType, height, graph, saveDataSave, update, up
                             <div className="p-2 border-b">
                                 <h2 className="font-bold">Navigation</h2>
                                 <ul>
-                                    <li>Press and hold <kbd>Middle Mouse</kbd> to pan the view</li>
-                                    <li>Use the <kbd>Mouse Wheel</kbd> to zoom in our out</li>
+                                    <li>Press and hold <kbd>Middle Mouse</kbd> to pan the view.
+                                        Or scroll up down on the trackpad - use <kbd>Shift+Scroll</kbd> to scroll to the side.</li>
+                                    <li>Use <kbd>Ctrl+Mouse Wheel</kbd> to zoom in our out</li>
                                 </ul>
                             </div>
                             <div className="p-2 border-b">
@@ -784,20 +810,24 @@ export function GraphEditor({windowType, height, graph, saveDataSave, update, up
                                     <li>The right (smaller) window contains the forbidden subgraphs - every component is
                                         one forbidden subgraph.
                                     </li>
+                                    <li>Press <kbd>F</kbd> to find forbidden subgraphs in the selection.
+                                    </li>
                                 </ul>
                             </div>
                         </div>
                     </button>
                 </div>}
 
-                <button type="button" className={buttonClass}
-                        onClick={() => zoomChange(undefined, view.zoom, false)}>-
+                <button type="button"
+                        onClick={() => zoomChange(undefined, view.zoom, false)}>
+                    <kbd>-</kbd>
                 </button>
                 <button type="button" className={buttonClass}
                         onClick={() => viewSet({...view, zoom: 1})}>{Math.round(view.zoom * 100)}%
                 </button>
-                <button type="button" className={buttonClass}
-                        onClick={() => zoomChange(undefined, view.zoom, true)}>+
+                <button type="button"
+                        onClick={() => zoomChange(undefined, view.zoom, true)}>
+                    <kbd>+</kbd>
                 </button>
 
                 {windowType === 'main' && <div className="pt-1">
@@ -946,7 +976,7 @@ export function GraphEditor({windowType, height, graph, saveDataSave, update, up
                                 }}>
                             <kbd>Shift+F</kbd>
                             <div className="tooltiptext">
-                                <kbd>Shift+F</kbd> Toggle visibility of the forbidden subgraphs in the selection.
+                                <kbd>Shift+F</kbd> Toggle visibility of the list of forbidden subgraphs in the selection.
                             </div>
                         </button>
 
@@ -958,18 +988,18 @@ export function GraphEditor({windowType, height, graph, saveDataSave, update, up
                                  left: 0,
                                  padding: 0
                              }}>
-                            <button className="block w-full mt-1" onClick={keyboardToggleShowOverlappingForbidden}
+                            <button className="block w-full mt-1 tooltip" onClick={keyboardToggleShowOverlappingForbidden}
                                     style={{
                                         padding: 0,
                                         border: 'none'
                                     }}>
                                 <kbd>Shift+F</kbd>
                                 <div className="tooltiptext">
-                                    <kbd>Shift+F</kbd> Toggle visibility of the forbidden subgraphs in the selection.
+                                    <kbd>Shift+F</kbd> Toggle visibility of the list of forbidden subgraphs in the selection.
                                 </div>
                             </button>
                             {overlappingForbidden.forbidden.length} forbidden in selection
-                            <div className="mt-2 overflow-y-auto border-y"
+                            <div className="overflow-y-auto border-y"
                                  style={{
                                      maxHeight: "160px"
                                  }}>
