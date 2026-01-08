@@ -392,17 +392,12 @@ export default class Graph {
     // subgraph, components, list of vertex degrees
     //////////////////////////////////////////
 
-    /** check whether the given `graph` has the same count and IDs of vertices */
-    public filterForbiddenInSelection(selection: number[]): Graph[] {
-        const list: Graph[] = [];
-        const subgraph = this.getSubgraph(selection);
-
-        // check whether vertices are the same
-        for(const induced of this.forbiddenInduced) {
-            if(subgraph.hasSameVertexIDs(induced)) list.push(induced);
+    /** checks whether this graph contains the vertex IDs */
+    public containsVertices(selection: number[]): boolean {
+        for(const vid of selection) {
+            if(!this.vertices.has(vid)) return false;
         }
-
-        return list;
+        return true;
     }
 
     /** check whether the given `graph` has the same count and IDs of vertices */

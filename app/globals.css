@@ -3,14 +3,15 @@
 :root {
   --background: #ffffff;
   --foreground: #171717;
-}
 
-@theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
 }
+
+/*@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+}*/
 
 @media (prefers-color-scheme: dark) {
   :root {
@@ -23,4 +24,81 @@ body {
   background: var(--background);
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
+}
+
+/*
+CSS by https://dylanatsmith.com/wrote/styling-the-kbd-element
+Retrieved 08.01.2026
+*/
+kbd {
+  --kbd-color-background: var(--color-background);
+  --kbd-color-border:     #aaaaaa;
+  --kbd-color-text:       var(--foreground);
+
+  /* dark mode */
+  @media (prefers-color-scheme: dark) {
+    --kbd-color-background: #{color(grey, 55)};
+    --kbd-color-border:     #{color(grey, 25)};
+    --kbd-color-text:       #{color(grey, 14)};
+  }
+
+  /* light mode */
+  background-color: var(--kbd-color-background);
+  color: var(--kbd-color-text);
+
+  /* Add a simple border */
+  border: 1px solid var(--kbd-color-border);
+  border-radius: 0.25rem;
+  box-shadow: 0 2px 0 1px var(--kbd-color-border);
+  cursor: pointer;
+
+  line-height: 1;
+  text-align: center;
+  padding: 2px 5px;
+  margin: 2px;
+
+  position: relative;
+  top: -1px;
+
+  /* pushing down on hover */
+  &:hover {
+    box-shadow: 0 1px 0 0.5px var(--kbd-color-border);
+    top: 1px;
+  }
+}
+
+
+
+
+/* Tooltip container */
+.cursor {
+  cursor: pointer;
+}
+
+/* Tooltip container */
+.tooltip {
+  position: relative;
+  display: inline-block;
+  /* border-bottom: 1px dotted black; /* Add dots under the hoverable text */
+  cursor: pointer;
+}
+
+/* Tooltip text */
+.tooltiptext {
+  visibility: hidden; /* Hidden by default */
+  min-width: 180px;
+  background-color: white;
+  color: #000000;
+  text-align: center;
+  padding: 0.5rem 1rem;
+  border-radius: 6px;
+  border: 1px solid black;
+  position: absolute;
+  z-index: 1; /* Ensure tooltip is displayed above content */
+  top: 115%;
+}
+
+/* Show the tooltip text on hover */
+.tooltip:hover .tooltiptext, .tooltip:hover .tooltiptext-wide {
+  visibility: visible;
 }
