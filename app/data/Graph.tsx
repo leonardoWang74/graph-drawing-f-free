@@ -1,5 +1,5 @@
 import Vector2 from "@/app/data/Vector2";
-import {Vertex, VertexData} from "@/app/data/Vertex";
+import {Vertex, VertexData, VertexStyle, VertexStyleClone} from "@/app/data/Vertex";
 import Subsets from "@/app/util/Subsets";
 import {ArrayEquals} from "@/app/util/ArrayUtils";
 import {SortNumberDescending} from "@/app/util/SortUtils";
@@ -10,24 +10,37 @@ export interface GraphData {
     name: string;
     savedLast: string;
     vertices: VertexData[];
-    edgeStyle: Map<number, Map<number, LineStyle>>;
+    edgeStyle: Record<number, Record<number, LineStyle>>;
 }
 
 export type LineType = "solid" | "dashed" | "dotted";
 export type LineWeight = "thin" | "normal" | "heavy" | "fat" | number;
 
+export interface LineStyle {
+    color: string;
+    type: LineType;
+    weight: LineWeight;
+}
+export function LineStyleClone(style: LineStyle): LineStyle {
+    return JSON.parse(JSON.stringify(style));
+}
+
 export function LineStyleDefault(): LineStyle {
     return {
-        color: "#00000060",
+        color: "#000000",
         weight: "thin",
         type: "solid"
     };
 }
 
-export interface LineStyle {
-    color: string;
-    type: LineType;
-    weight: LineWeight;
+export function VertexStyleDefault(): VertexStyle {
+    return {
+        show: 'id:label',
+        radius: 18,
+        textColor: '#000000',
+        bgColor: '#ffffff',
+        lineStyle: LineStyleDefault(),
+    };
 }
 
 export const weightToWidth = (lw: LineWeight): number => {
@@ -54,6 +67,7 @@ export default class Graph {
 
     public vertices: Map<number, Vertex> = new Map<number, Vertex>();
     public edgeStyle: Map<number, Map<number, LineStyle>> = new Map<number, Map<number, LineStyle>>();
+    public edgesForbidden: Map<number, Set<number>> = new Map<number, Set<number>>();
 
     public activeVertices: number[] = [];
     public forbiddenInduced: Graph[] = [];
@@ -466,8 +480,17 @@ export default class Graph {
         for(const vertex of this.vertices.values()) {
             if(!vertices.includes(vertex.id)) continue;
             const v = vertex.clone();
-            v.subgraphFilterArray(vertices);
+            v.subgraphFilter(vertices);
+            v.style = VertexStyleClone(vertex.style);
             graph.vertexAdd(v);
+
+            // copy edge style to neighbors
+            for(const to of v.neighbors) {
+                const style = this.edgeStyle.get(v.id)?.get(to);
+                if(!style) continue;
+                if(!graph.edgeStyle.has(v.id)) graph.edgeStyle.set(v.id, new Map<number, LineStyle>());
+                graph.edgeStyle.get(v.id)?.set(to, LineStyleClone(style));
+            }
         }
 
         return graph;
@@ -488,6 +511,8 @@ export default class Graph {
             );
 
             this.vertexAdd(v);
+            v.style = VertexStyleClone(original.style);
+
             insertedVertices.push(v.id);
             bijection.set(original.id, v.id);
         }
@@ -502,6 +527,13 @@ export default class Graph {
                 if(!from || !to) continue;
 
                 this.edgeAdd(from, to);
+
+                // copy edge style
+                const style = subgraph.edgeStyle.get(fromOriginal.id)?.get(toOriginal);
+                if(style) {
+                    if (!this.edgeStyle.has(from.id)) this.edgeStyle.set(from.id, new Map<number, LineStyle>());
+                    this.edgeStyle.get(from.id)?.set(to.id, LineStyleClone(style));
+                }
             }
         }
 
@@ -614,6 +646,18 @@ export default class Graph {
         graph.id = data.id;
         graph.name = data.name;
         graph.savedLast = data.savedLast;
+
+        for(const from in data.edgeStyle) {
+            if(!Object.hasOwn(data.edgeStyle, from)) continue;
+
+            graph.edgeStyle.set(+from, new Map<number, LineStyle>());
+            const map = data.edgeStyle[from];
+            for(const to in map) {
+                if(!Object.hasOwn(map, to)) continue;
+                graph.edgeStyle.get(+from)?.set(+to, map[to]);
+            }
+        }
+
         graph.vertices.clear();
 
         // add vertices
@@ -646,8 +690,14 @@ export default class Graph {
             name: this.name,
             savedLast: this.savedLast,
             vertices: [],
-            edgeStyle: this.edgeStyle,
+            edgeStyle: {},
         };
+        for(const [from, map] of this.edgeStyle.entries()) {
+            data.edgeStyle[from] = {};
+            for(const [to, style] of map.entries()) {
+                data.edgeStyle[from][to] = style;
+            }
+        }
 
         for (const v of this.vertices.values()) {
             data.vertices.push(v.VertexToData());

@@ -1,12 +1,22 @@
 'use client'
 
 import React, {JSX, useCallback, useEffect, useRef, useState} from "react";
-import Graph, {GraphData, LineStyle, LineStyleDefault, weightToWidth} from "@/app/data/Graph";
-import {Vertex} from "@/app/data/Vertex";
+import Graph, {
+    GraphData,
+    LineStyle,
+    LineStyleClone,
+    LineStyleDefault,
+    VertexStyleDefault,
+    weightToWidth
+} from "@/app/data/Graph";
+import {Vertex, VertexStyle, VertexStyleClone} from "@/app/data/Vertex";
 import Vector2 from "@/app/data/Vector2";
 import {DateToLocalWithTime} from "@/app/util/DateUtils";
 import {ArrayEquals} from "@/app/util/ArrayUtils";
 import {ColorHexSetTransparency} from "@/app/util/ColorUtils";
+import {HexColorPicker} from "react-colorful";
+import useClickOutside from "@/app/hooks/useClickOutside";
+import {PromiseWait} from "@/app/util/PromiseUtils";
 
 export interface SaveData {
     graphIdActive: number;
@@ -16,6 +26,7 @@ export interface SaveData {
 }
 
 export type WindowType = "main" | "forbidden";
+
 export interface GraphEditorProps {
     windowType: WindowType;
     height: number;
@@ -26,10 +37,9 @@ export interface GraphEditorProps {
     update?: Date;
     updateSet: (d: Date) => void;
 
-    setGraphActive: (g :Graph) => void;
+    setGraphActive: (g: Graph) => void;
 }
 
-const vertexRadius = 18;
 const buttonClass = "text-body bg-neutral-secondary-medium box-border border border-default-medium hover:bg-neutral-tertiary-medium hover:text-heading focus:ring-4 focus:ring-neutral-tertiary shadow-xs font-medium leading-5 rounded-base text-sm px-3 py-1.5 focus:outline-none rounded";
 
 export default function GraphWindow() {
@@ -60,7 +70,7 @@ export default function GraphWindow() {
 
         // parse save data
         const saveData = JSON.parse(saveString) as SaveData;
-        if(!saveData.graphIdForbidden) saveData.graphIdForbidden = 2;
+        if (!saveData.graphIdForbidden) saveData.graphIdForbidden = 2;
 
         // look for the active graph
         let graph: Graph | undefined = undefined;
@@ -77,7 +87,7 @@ export default function GraphWindow() {
             forbidden = Graph.loadFromData(g);
             break;
         }
-        if(!forbidden) {
+        if (!forbidden) {
             forbidden = Graph.Graph();
             forbidden.id = saveData.graphIdForbidden ?? 2;
             saveData.graphs.push(forbidden.saveToData());
@@ -90,20 +100,20 @@ export default function GraphWindow() {
     }, []);
 
     const saveDataSave = useCallback(() => {
-        if(!graph || !forbidden || !saveData) return;
+        if (!graph || !forbidden || !saveData) return;
 
         // look for the active graph
-        for (let i= 0; i<saveData.graphs.length; ++i) {
+        for (let i = 0; i < saveData.graphs.length; ++i) {
             const g = saveData.graphs[i];
-            if(g.id !== graph.id) continue;
+            if (g.id !== graph.id) continue;
             saveData.graphs[i] = graph.saveToData();
             break;
         }
 
         // look for the forbidden graph
-        for (let i= 0; i<saveData.graphs.length; ++i) {
+        for (let i = 0; i < saveData.graphs.length; ++i) {
             const g = saveData.graphs[i];
-            if(g.id !== forbidden.id) continue;
+            if (g.id !== forbidden.id) continue;
             saveData.graphs[i] = forbidden.saveToData();
             break;
         }
@@ -114,52 +124,40 @@ export default function GraphWindow() {
     }, [saveData, graph]);
 
     const setGraphActive = useCallback((g: Graph) => {
-        if(!saveData) return;
+        if (!saveData) return;
 
         // set graphs as not active
-        if(graph) graph.active = false;
-        if(forbidden) forbidden.active = false;
+        if (graph) graph.active = false;
+        if (forbidden) forbidden.active = false;
 
         // set graph as active
         g.active = true;
     }, [saveData, graph, forbidden]);
 
     const getForbiddenSubgraphs = useCallback(() => {
-        if(!graph || !forbidden) return;
+        if (!graph || !forbidden) return;
         const components = forbidden.getSubgraphWithoutDisabled().getComponents();
         console.log('forbidden subgraphs:', components);
 
         let activeGraph = graph;
-        if(graph.activeVertices.length > 0) activeGraph = graph.getSubgraph(graph.activeVertices);
+        if (graph.activeVertices.length > 0) activeGraph = graph.getSubgraph(graph.activeVertices);
 
         // find induced forbidden subgraphs
         const inducedForbidden: Graph[] = [];
-        for(const forbidden of components) {
+        for (const forbidden of components) {
             inducedForbidden.push(...activeGraph.inducedSubgraphs(forbidden));
         }
         graph.forbiddenInduced = inducedForbidden;
         console.log('inducedForbidden', inducedForbidden);
         console.log('################################################');
 
-        const forbiddenStyle = LineStyleDefault();
-        forbiddenStyle.color = '#ff000085'
-
-        // change "red" colors in the graph to black
-        const lineStyleDefault = LineStyleDefault();
-        for(const map of graph.edgeStyle.values()) {
-            for(const style of map.values()) {
-                if(style.color === forbiddenStyle.color) style.color = lineStyleDefault.color;
-            }
-        }
-
         // mark the induced forbidden subgraphs with red edges
-        for(const subgraph of inducedForbidden) {
-            for(const v of subgraph.vertices.values()) {
-                for(const v2 of v.neighbors) {
-                    if(!graph.edgeStyle.has(v.id)) graph.edgeStyle.set(v.id, new Map<number, LineStyle>());
-                    const currentStyle = graph.edgeStyle.get(v.id)?.get(v2) ?? LineStyleDefault();
-                    currentStyle.color = forbiddenStyle.color;
-                    graph.edgeStyle.get(v.id)?.set(v2, currentStyle);
+        graph.edgesForbidden.clear();
+        for (const subgraph of inducedForbidden) {
+            for (const v of subgraph.vertices.values()) {
+                for (const v2 of v.neighbors) {
+                    if (!graph.edgesForbidden.has(v.id)) graph.edgesForbidden.set(v.id, new Set<number>());
+                    graph.edgesForbidden.get(v.id)?.add(v2);
                 }
             }
         }
@@ -180,11 +178,17 @@ export default function GraphWindow() {
 
             // find forbidden subgraphs
             if (e.key === "f") {
-                if(!e.shiftKey && !e.ctrlKey) getForbiddenSubgraphs();
+                if (!e.shiftKey && !e.ctrlKey) getForbiddenSubgraphs();
+            }
+            // prevent window closing
+            else if (e.key === "w" || e.key === "W") {
+                if(e.ctrlKey) e.preventDefault();
+
+                e.preventDefault();
             }
         };
-        window.addEventListener("keydown", onKey);
-        document.addEventListener("wheel", onWheelPrevent, { passive: false });
+        window.addEventListener("keydown", onKey, {passive: false});
+        document.addEventListener("wheel", onWheelPrevent, {passive: false});
         return () => {
             window.removeEventListener("keydown", onKey);
             document.removeEventListener("wheel", onWheelPrevent);
@@ -205,10 +209,12 @@ export default function GraphWindow() {
             </div>
             <div className="flex flex-row h-screen">
                 {graph && saveData &&
-                    <GraphEditor windowType="main" height={75} graph={graph} saveData={saveData} saveDataSave={saveDataSave}
+                    <GraphEditor windowType="main" height={75} graph={graph} saveData={saveData}
+                                 saveDataSave={saveDataSave}
                                  update={update} updateSet={updateSet} setGraphActive={setGraphActive}/>}
                 {forbidden && saveData &&
-                    <GraphEditor windowType="forbidden" height={25} graph={forbidden} saveData={saveData} saveDataSave={saveDataSave}
+                    <GraphEditor windowType="forbidden" height={25} graph={forbidden} saveData={saveData}
+                                 saveDataSave={saveDataSave}
                                  update={update} updateSet={updateSet} setGraphActive={setGraphActive}/>}
 
             </div>
@@ -241,25 +247,40 @@ interface PointerData {
 interface ViewData {
     zoom: number;
     pan: Vector2;
+    gridSize: number;
 }
 
 interface VertexDragData {
     mouseStartOffset: Vector2;
     vertex: number;
+    ctrlKey: boolean;
 }
 
-export function GraphEditor({windowType, height, graph, saveDataSave, update, updateSet, setGraphActive}: GraphEditorProps) {
+interface PropertyData {
+    /** also includes a line style for edges */
+    vertexStyle: VertexStyle;
+}
+
+export function GraphEditor({
+                                windowType,
+                                height,
+                                graph,
+                                saveDataSave,
+                                update,
+                                updateSet,
+                                setGraphActive
+                            }: GraphEditorProps) {
     const svgRef = useRef<SVGSVGElement | null>(null);
     const worldRef = useRef<SVGGElement | null>(null);
 
-    const [view, viewSet] = useState<ViewData>({zoom: 1, pan: new Vector2(0, 0)});
+    const [properties, propertiesSet] = useState<PropertyData>({vertexStyle: VertexStyleDefault()});
+
+    const [view, viewSet] = useState<ViewData>({zoom: 1, pan: new Vector2(0, 0), gridSize: 1});
     const [panning, panningSet] = useState<PanningData>();
     const [mouseLast, mouseLastSet] = useState<PointerData>({screen: new Vector2(0, 0)});
 
     // const [activeVertices, activeVerticesSet] = useState<number[]>([]);
     const [dragVertex, dragVertexSet] = useState<VertexDragData>();
-
-    const [activeEdge, activeEdgeSet] = useState<Vector2>();
 
     const [boxSelect, boxSelectSet] = useState<BoxSelectionData>();
 
@@ -293,197 +314,19 @@ export function GraphEditor({windowType, height, graph, saveDataSave, update, up
     }, [screenToWorld, getMousePositionScreen]);
 
     ///////////////////////////////////////////////////
-    // region canvas interactions
-    const updateTransform = useCallback((view: ViewData) => {
-        if (!worldRef.current || !('setAttribute' in worldRef.current)) return;
-        worldRef.current.setAttribute(
-            "transform",
-            `translate(${view.pan.x}, ${view.pan.y}) scale(${view.zoom})`
-        );
-    }, []);
-
-    const onMouseDownCanvas = useCallback((e: React.MouseEvent) => {
-        // left click on canvas = box select / deselect
-        if (e.button === 0) {
-            // no shift key: clear selection
-            let activeVerticesStart = [...graph.activeVertices];
-
-            if (!e.ctrlKey && !e.shiftKey) {
-                activeVerticesStart = [];
-                graph.activeVertices = [];
-                activeEdgeSet(null);
-            }
-
-            const screenPos = getMousePositionScreen(e);
-            boxSelectSet({
-                shift: e.shiftKey,
-                ctrl: e.ctrlKey,
-                activeVertices: activeVerticesStart,
-                from: screenPos,
-                to: screenPos
-            });
-            return;
-        }
-        // middle click = pan
-        else if (e.button === 1) {
-            panningSet({panStart: view.pan, mouseStart: new Vector2(e.clientX, e.clientY)});
-        }
-    }, [view, getMousePositionScreen, graph]);
-
-    const onMouseMove = useCallback((e: React.MouseEvent) => {
-        if (!graph) return;
-
-        // pan view
-        if (panning) {
-            view.pan = new Vector2(
-                panning.panStart.x + e.clientX - panning.mouseStart.x,
-                panning.panStart.y + e.clientY - panning.mouseStart.y
-            );
-            updateTransform(view);
-        }
-
-        // box select: move end point
-        if (boxSelect) {
-            boxSelect.to = getMousePositionScreen(e);
-
-            const worldFromUnsorted = screenToWorld(boxSelect.from);
-            const worldToUnsorted = screenToWorld(boxSelect.to);
-
-            const slack = vertexRadius * 0.6;
-            const worldFrom = new Vector2(
-                Math.min(worldFromUnsorted.x, worldToUnsorted.x) - slack,
-                Math.min(worldFromUnsorted.y, worldToUnsorted.y) - slack
-            );
-            const worldTo = new Vector2(
-                Math.max(worldFromUnsorted.x, worldToUnsorted.x) + slack,
-                Math.max(worldFromUnsorted.y, worldToUnsorted.y) + slack
-            );
-
-            const active = [...boxSelect.activeVertices];
-            for (const vertex of graph.vertices.values()) {
-                // check bounding box
-                if (
-                    worldFrom.x <= vertex.position.x && vertex.position.x <= worldTo.x
-                    && worldFrom.y <= vertex.position.y && vertex.position.y <= worldTo.y
-                ) {
-                    // add to selection
-                    if (!boxSelect.ctrl || boxSelect.shift) {
-                        if (!active.includes(vertex.id)) {
-                            active.push(vertex.id);
-                            continue;
-                        }
-                    }
-                    // ctrl: remove from selection
-                    if (boxSelect.ctrl) {
-                        const index = active.indexOf(vertex.id);
-                        if (index >= 0) active.splice(index, 1);
-                    }
-                }
-            }
-
-            if (!ArrayEquals(graph.activeVertices, active)) {
-                graph.activeVertices = active;
-                updateSet(new Date());
-            }
-            // boxSelectSet({...boxSelect, to: getMousePositionScreen(e)});
-        }
-
-        // move active vertex
-        if (dragVertex) {
-            const pos = getMousePositionWorld(e).plus(dragVertex.mouseStartOffset);
-
-            const v = graph.vertexGet(dragVertex.vertex);
-            if (v) {
-                // move other selected vertices relative to v's current position
-                for (const vId of graph.activeVertices) {
-                    const vertex = graph.vertexGet(vId);
-                    if (!vertex || vertex.id === v.id) continue;
-                    vertex.position = new Vector2(pos.x + vertex.position.x - v.position.x, pos.y + vertex.position.y - v.position.y);
-                }
-
-                v.position = pos;
-                updateSet(new Date());
-            }
-        }
-
-        // mouseLast.screen = getMousePositionScreen(e);
-        mouseLastSet({...mouseLast, screen: getMousePositionScreen(e)});
-        setGraphActive(graph);
-    }, [panning, view, mouseLast, dragVertex, graph, getMousePositionScreen, getMousePositionWorld, boxSelect]);
-
-    const onMouseUp = useCallback((_: React.MouseEvent) => {
-        if (!graph) return;
-
-        if (!panning && !boxSelect) saveDataSave();
-
-        panningSet(undefined);
-        boxSelectSet(undefined);
-        dragVertexSet(undefined);
-    }, [graph, screenToWorld, saveDataSave, panning, boxSelect]);
-
-    const zoomChange = useCallback((e: React.MouseEvent | undefined, zoomNow: number, zoomIn: boolean, mouseScreenPosition?: Vector2) => {
-        // different deltas depending on the current zoom
-        let delta = 0.25;
-        if (zoomNow <= 0.51 && !zoomIn) {
-            delta = 0.05;
-        } else if (zoomNow < 0.49) {
-            delta = 0.05;
-        }
-        const zoomNew = Math.min(2, Math.max(0.05, zoomNow + delta * (zoomIn ? 1 : -1)));
-
-        // change pan so that mouse / screen center stays at the same world position
-        const rect = svgRef.current!.getBoundingClientRect();
-        const screenX = e ? e.clientX - rect.left : (mouseScreenPosition?.x ?? rect.width / 2);
-        const screenY = e ? e.clientY - rect.top : (mouseScreenPosition?.y ?? rect.height / 2);
-
-        // screenToWorldCalculation(pan, zoom, x, y) = new Vector2((x - pan.x) / zoom, (y - pan.y) / zoom);
-        const screenCenterNow = screenToWorldCalculation(view.pan, zoomNow, new Vector2(screenX, screenY));
-
-        // screenCenterNew = screenToWorldCalculation(panNew, zoomNew, x,y) = new Vector2((x - panNew.x) / zoomNew, (y - panNew.y) / zoomNew);
-        // solving for panNew.x: (x - panNew.x) / zoomNew = screenCenterNow.x
-        // solving for panNew.x: panNew.x = x - screenCenterNow * zoomNew
-        viewSet({
-            ...view,
-            zoom: zoomNew,
-            pan: new Vector2(screenX - screenCenterNow.x * zoomNew, screenY - screenCenterNow.y * zoomNew)
-        });
-    }, [svgRef, screenToWorldCalculation, view]);
-
-    const onWheel = useCallback((e: React.WheelEvent) => {
-        // zoom
-        if(e.ctrlKey) zoomChange(e, view.zoom, e.deltaY < 0);
-        // pan left/right
-        else if(e.shiftKey) {
-            viewSet(v => {
-                return {...v, pan: new Vector2(v.pan.x - 0.5 * e.deltaY / Math.sqrt(v.zoom), v.pan.y)};
-            });
-        }
-        // pan up/down
-        else {
-            viewSet(v => {
-                return {...v, pan: new Vector2(v.pan.x, v.pan.y - 0.5 * e.deltaY / Math.sqrt(v.zoom))};
-            });
-        }
-    }, [zoomChange, view]);
-
-    // endregion canvas interactions
-
-    ///////////////////////////////////////////////////
     // region keyboard
-
-    const keyboardFunctionEdgesToggle = useCallback((graph: Graph, from: Vertex, to: Vertex) => {
-        if (graph.edgeHas(from, to)) graph.edgeRemove(from, to);
-        else graph.edgeAdd(from, to);
+    const keyboardDeleteSelection = useCallback((graph: Graph) => {
+        if (graph.activeVertices.length > 0) {
+            for (const vId of graph.activeVertices) {
+                const v = graph.vertexGet(vId);
+                if (v) graph.vertexRemove(v);
+            }
+            graph.activeVertices = [];
+            updateSet(new Date());
+        }
     }, []);
-    const keyboardFunctionEdgesAdd = useCallback((graph: Graph, from: Vertex, to: Vertex) => {
-        if (!graph.edgeHas(from, to)) graph.edgeAdd(from, to);
-    }, []);
 
-    const exportSelection = useCallback((
-        svg: SVGSVGElement,
-        graph: Graph,
-        selectedVertices: number[]
-    ) => {
+    const exportSelection = useCallback((svg: SVGSVGElement, graph: Graph, selectedVertices: number[]) => {
         if (!svg) return;
         let filename = graph.name;
 
@@ -539,6 +382,13 @@ export function GraphEditor({windowType, height, graph, saveDataSave, update, up
         URL.revokeObjectURL(url);
     }, []);
 
+    const keyboardFunctionEdgesToggle = useCallback((graph: Graph, from: Vertex, to: Vertex) => {
+        if (graph.edgeHas(from, to)) graph.edgeRemove(from, to);
+        else graph.edgeAdd(from, to);
+    }, []);
+    const keyboardFunctionEdgesAdd = useCallback((graph: Graph, from: Vertex, to: Vertex) => {
+        if (!graph.edgeHas(from, to)) graph.edgeAdd(from, to);
+    }, []);
 
     const keyboardEdges = useCallback((e?: KeyboardEvent, graph?: Graph) => {
         if (!graph) return;
@@ -598,11 +448,7 @@ export function GraphEditor({windowType, height, graph, saveDataSave, update, up
         }
         updateSet(new Date());
     }, [keyboardFunctionEdgesAdd, keyboardFunctionEdgesToggle]);
-    const keyboardAddVertex = useCallback((graph: Graph) => {
-        const v = graph.vertexAdd(Vertex.Vertex(screenToWorld(mouseLast.screen)));
-        graph.activeVertices.push(v.id);
-        updateSet(new Date());
-    }, [mouseLast, screenToWorld]);
+
     const keyboardDisableSelection = useCallback((graph: Graph) => {
         for (const vId of graph.activeVertices) {
             const vertex = graph.vertexGet(vId);
@@ -611,27 +457,12 @@ export function GraphEditor({windowType, height, graph, saveDataSave, update, up
         }
         updateSet(new Date());
     }, []);
+
     const keyboardToggleShowOverlappingForbidden = useCallback(() => {
         showOverlappingForbiddenSet(v => !v);
     }, []);
-    const keyboardDeleteSelection = useCallback((graph: Graph) => {
-        if (graph.activeVertices.length > 0) {
-            for (const vId of graph.activeVertices) {
-                const v = graph.vertexGet(vId);
-                if (v) graph.vertexRemove(v);
-            }
-            graph.activeVertices = [];
-            updateSet(new Date());
-        }
-        if (activeEdge) {
-            const va = graph.vertexGet(activeEdge.x);
-            const vb = graph.vertexGet(activeEdge.y);
-            if (va && vb) graph.edgeRemove(va, vb);
-            activeEdgeSet(null);
-            updateSet(new Date());
-        }
-    }, [activeEdge]);
 
+    // keyboard functions without any dependencies
     useEffect(() => {
         const onKey = (e: KeyboardEvent) => {
             if (!graph || !graph.active) return;
@@ -645,7 +476,6 @@ export function GraphEditor({windowType, height, graph, saveDataSave, update, up
             // clear selection
             else if (e.key === "Escape") {
                 graph.activeVertices = [];
-                activeEdgeSet(undefined);
             }
             // export / save
             else if (e.key === "s" || e.key === "S") {
@@ -656,8 +486,75 @@ export function GraphEditor({windowType, height, graph, saveDataSave, update, up
                     e.preventDefault();
                 }
             }
+            // "e": toggle/add edges in selection
+            else if (e.key === "e" || e.key === "E") {
+                keyboardEdges(e, graph);
+                e.preventDefault();
+                saveDataSave();
+            }
+            // "d": disable selection
+            else if (e.key === "d") {
+                keyboardDisableSelection(graph);
+                e.preventDefault();
+                saveDataSave();
+            }
+            // "shift+F": toggle showing overlapping
+            else if (e.key === "F") {
+                keyboardToggleShowOverlappingForbidden();
+                e.preventDefault();
+            }
+        };
+        window.addEventListener("keydown", onKey);
+        return () => window.removeEventListener("keydown", onKey);
+    }, [graph, saveDataSave,
+        keyboardDeleteSelection, exportSelection, keyboardEdges, keyboardDisableSelection,
+        keyboardToggleShowOverlappingForbidden
+    ]);
+
+    const keyboardAddVertex = useCallback((graph: Graph) => {
+        const v = graph.vertexAdd(Vertex.Vertex(screenToWorld(mouseLast.screen)));
+        graph.activeVertices.push(v.id);
+        updateSet(new Date());
+    }, [mouseLast, screenToWorld]);
+
+    const zoomChange = useCallback((e: React.MouseEvent | undefined, zoomIn: boolean, mouseScreenPosition?: Vector2) => {
+        viewSet(view => {
+            // different deltas depending on the current zoom
+            let delta = 0.25;
+            if (view.zoom <= 0.51 && !zoomIn) {
+                delta = 0.05;
+            } else if (view.zoom < 0.49) {
+                delta = 0.05;
+            }
+            const zoomNew = Math.min(2, Math.max(0.05, view.zoom + delta * (zoomIn ? 1 : -1)));
+
+            // change pan so that mouse / screen center stays at the same world position
+            const rect = svgRef.current!.getBoundingClientRect();
+            const screenX = e ? e.clientX - rect.left : (mouseScreenPosition?.x ?? rect.width / 2);
+            const screenY = e ? e.clientY - rect.top : (mouseScreenPosition?.y ?? rect.height / 2);
+
+            // screenToWorldCalculation(pan, zoom, x, y) = new Vector2((x - pan.x) / zoom, (y - pan.y) / zoom);
+            const screenCenterNow = screenToWorldCalculation(view.pan, view.zoom, new Vector2(screenX, screenY));
+
+            // screenCenterNew = screenToWorldCalculation(panNew, zoomNew, x,y) = new Vector2((x - panNew.x) / zoomNew, (y - panNew.y) / zoomNew);
+            // solving for panNew.x: (x - panNew.x) / zoomNew = screenCenterNow.x
+            // solving for panNew.x: panNew.x = x - screenCenterNow * zoomNew
+            return {
+                ...view,
+                zoom: zoomNew,
+                pan: new Vector2(screenX - screenCenterNow.x * zoomNew, screenY - screenCenterNow.y * zoomNew)
+            };
+        });
+    }, [svgRef, screenToWorldCalculation]);
+
+    // keyboard functions depending on mouse
+    useEffect(() => {
+        const onKey = (e: KeyboardEvent) => {
+            if (!graph || !graph.active) return;
+            // console.log(e.key, e.ctrlKey, e.shiftKey)
+
             // copy
-            else if (e.key === "c") {
+            if (e.key === "c") {
                 if (e.ctrlKey) {
                     clipboardSet({
                         graph: graph.getSubgraph(graph.activeVertices),
@@ -684,46 +581,272 @@ export function GraphEditor({windowType, height, graph, saveDataSave, update, up
                     saveDataSave();
                 }
             }
-            // "e": toggle/add edges in selection
-            else if (e.key === "e" || e.key === "E") {
-                keyboardEdges(e, graph);
-                e.preventDefault();
-                saveDataSave();
-            }
-            // "d": disable selection
-            else if (e.key === "d") {
-                keyboardDisableSelection(graph);
-                e.preventDefault();
-                saveDataSave();
-            }
-            // "shift+F": toggle showing overlapping
-            else if (e.key === "F") {
-                keyboardToggleShowOverlappingForbidden();
-                e.preventDefault();
-            }
             // "+": zoom in
             else if (e.key === "+") {
-                zoomChange(undefined, view.zoom, true, mouseLast.screen);
+                zoomChange(undefined, true, mouseLast.screen);
                 e.preventDefault();
             }
             // "-": zoom in
             else if (e.key === "-") {
-                zoomChange(undefined, view.zoom, false, mouseLast.screen);
+                zoomChange(undefined, false, mouseLast.screen);
                 e.preventDefault();
             }
         };
         window.addEventListener("keydown", onKey);
         return () => window.removeEventListener("keydown", onKey);
-    }, [activeEdge, graph, saveDataSave, screenToWorld, mouseLast, clipboard,
-        keyboardEdges, keyboardDisableSelection, keyboardAddVertex, keyboardDeleteSelection]);
+    }, [graph, saveDataSave, screenToWorld, mouseLast, clipboard,
+        keyboardAddVertex, zoomChange
+    ]);
+
+
+    const keyboardFunctionPropertiesPick = useCallback((graph: Graph) => {
+        if (!graph || graph.activeVertices.length === 0) return;
+        const last = graph.activeVertices[graph.activeVertices.length - 1];
+        const vertex = graph.vertexGet(last);
+        if (!vertex) return;
+        propertiesSet(p => {
+            return {...p, vertexStyle: VertexStyleClone(vertex.style)};
+        });
+    }, [propertiesSet]);
+    const keyboardFunctionPropertiesSet = useCallback((graph: Graph, properties: PropertyData) => {
+        if (!graph) return;
+        for (const vId of graph.activeVertices) {
+            const vertex = graph.vertexGet(vId);
+            if (!vertex) continue;
+            vertex.style = VertexStyleClone(properties.vertexStyle);
+        }
+        updateSet(new Date());
+    }, []);
+    const keyboardFunctionPropertiesEdgePick = useCallback((graph: Graph) => {
+        if (!graph) return;
+
+        // pick the first we find
+        for (const fromId of graph.activeVertices) {
+            for (const toId of graph.activeVertices) {
+                if (fromId === toId) continue;
+
+                const lineStyle = LineStyleClone(graph.edgeStyle.get(fromId)?.get(toId) ?? LineStyleDefault());
+                propertiesSet(p => {
+                    return {...p, vertexStyle: {...p.vertexStyle, lineStyle: lineStyle}};
+                });
+                return;
+            }
+        }
+    }, [propertiesSet]);
+    const keyboardFunctionPropertiesEdgeSet = useCallback((graph: Graph, properties: PropertyData) => {
+        if (!graph) return;
+        for (const fromId of graph.activeVertices) {
+            const from = graph.vertexGet(fromId);
+            if (!from) continue;
+
+            for (const toId of graph.activeVertices) {
+                if (fromId >= toId) continue;
+                const to = graph.vertexGet(fromId);
+                if (!to) continue;
+
+                if (!graph.edgeStyle.has(fromId)) graph.edgeStyle.set(fromId, new Map<number, LineStyle>());
+                graph.edgeStyle.get(fromId)?.set(toId, LineStyleClone(properties.vertexStyle.lineStyle));
+            }
+        }
+        updateSet(new Date());
+    }, []);
+
+    // keyboard functions depending on properties
+    useEffect(() => {
+        const onKey = (e: KeyboardEvent) => {
+            if (!graph || !graph.active) return;
+            // console.log(e.key, e.ctrlKey, e.shiftKey)
+
+            // "q": properties
+            if (e.key === "q" || e.key === "Q") {
+                // affect vertices
+                if(!e.altKey) {
+                    // apply properties
+                    if(e.shiftKey) {
+                        keyboardFunctionPropertiesSet(graph, properties);
+                    }
+                    // pick properties
+                    else {
+                        keyboardFunctionPropertiesPick(graph);
+                    }
+                }
+                // affect edges
+                else {
+                    // apply properties
+                    if(e.shiftKey) {
+                        keyboardFunctionPropertiesEdgeSet(graph, properties);
+                    }
+                    // pick properties
+                    else {
+                        keyboardFunctionPropertiesEdgePick(graph);
+                    }
+                }
+                e.preventDefault();
+            }
+        };
+        window.addEventListener("keydown", onKey);
+        return () => window.removeEventListener("keydown", onKey);
+    }, [graph, saveDataSave, properties,
+        keyboardFunctionPropertiesPick, keyboardFunctionPropertiesSet, keyboardFunctionPropertiesEdgePick, keyboardFunctionPropertiesEdgeSet
+    ]);
 
     // endregion keyboard
 
+    ///////////////////////////////////////////////////
+    // region canvas interactions
+    const updateTransform = useCallback((view: ViewData) => {
+        if (!worldRef.current || !('setAttribute' in worldRef.current)) return;
+        worldRef.current.setAttribute(
+            "transform",
+            `translate(${view.pan.x}, ${view.pan.y}) scale(${view.zoom})`
+        );
+    }, []);
+
+    const onMouseDownCanvas = useCallback((e: React.MouseEvent) => {
+        // left click on canvas = box select / deselect
+        if (e.button === 0) {
+            // no shift key: clear selection
+            let activeVerticesStart = [...graph.activeVertices];
+
+            if (!e.ctrlKey && !e.shiftKey) {
+                activeVerticesStart = [];
+                graph.activeVertices = [];
+            }
+
+            const screenPos = getMousePositionScreen(e);
+            boxSelectSet({
+                shift: e.shiftKey,
+                ctrl: e.ctrlKey,
+                activeVertices: activeVerticesStart,
+                from: screenPos,
+                to: screenPos
+            });
+            return;
+        }
+        // middle click = pan
+        else if (e.button === 1) {
+            panningSet({panStart: view.pan, mouseStart: new Vector2(e.clientX, e.clientY)});
+        }
+    }, [view, getMousePositionScreen, graph]);
+
+    const onMouseMove = useCallback((e: React.MouseEvent) => {
+        if (!graph) return;
+
+        // pan view
+        if (panning) {
+            view.pan = new Vector2(
+                panning.panStart.x + e.clientX - panning.mouseStart.x,
+                panning.panStart.y + e.clientY - panning.mouseStart.y
+            );
+            updateTransform(view);
+        }
+
+        // box select: move end point
+        if (boxSelect) {
+            boxSelect.to = getMousePositionScreen(e);
+
+            const worldFromUnsorted = screenToWorld(boxSelect.from);
+            const worldToUnsorted = screenToWorld(boxSelect.to);
+
+            const worldFrom = new Vector2(
+                Math.min(worldFromUnsorted.x, worldToUnsorted.x),
+                Math.min(worldFromUnsorted.y, worldToUnsorted.y)
+            );
+            const worldTo = new Vector2(
+                Math.max(worldFromUnsorted.x, worldToUnsorted.x),
+                Math.max(worldFromUnsorted.y, worldToUnsorted.y)
+            );
+
+            const active = [...boxSelect.activeVertices];
+            for (const vertex of graph.vertices.values()) {
+                const style = vertex.style ?? VertexStyleDefault();
+                const slack = style.radius;
+
+                // check bounding box
+                if (
+                    worldFrom.x - slack <= vertex.position.x && vertex.position.x <= worldTo.x + slack
+                    && worldFrom.y - slack <= vertex.position.y && vertex.position.y <= worldTo.y + slack
+                ) {
+                    // add to selection
+                    if (!boxSelect.ctrl || boxSelect.shift) {
+                        if (!active.includes(vertex.id)) {
+                            active.push(vertex.id);
+                            continue;
+                        }
+                    }
+                    // ctrl: remove from selection
+                    if (boxSelect.ctrl) {
+                        const index = active.indexOf(vertex.id);
+                        if (index >= 0) active.splice(index, 1);
+                    }
+                }
+            }
+
+            if (!ArrayEquals(graph.activeVertices, active)) {
+                graph.activeVertices = active;
+                updateSet(new Date());
+            }
+            // boxSelectSet({...boxSelect, to: getMousePositionScreen(e)});
+        }
+
+        // move active vertex
+        if (dragVertex) {
+            const pos = getMousePositionWorld(e).plus(dragVertex.mouseStartOffset).grid(view.gridSize);
+
+            const v = graph.vertexGet(dragVertex.vertex);
+            if (v) {
+                // move other selected vertices relative to v's current position
+                if (!dragVertex.ctrlKey) {
+                    for (const vId of graph.activeVertices) {
+                        const vertex = graph.vertexGet(vId);
+                        if (!vertex || vertex.id === v.id) continue;
+                        vertex.position = new Vector2(pos.x + vertex.position.x - v.position.x, pos.y + vertex.position.y - v.position.y);
+                    }
+                }
+
+                v.position = pos;
+                updateSet(new Date());
+            }
+        }
+
+        // mouseLast.screen = getMousePositionScreen(e);
+        mouseLastSet({...mouseLast, screen: getMousePositionScreen(e)});
+        setGraphActive(graph);
+    }, [panning, view, mouseLast, dragVertex, graph, getMousePositionScreen, getMousePositionWorld, boxSelect]);
+
+    const onMouseUp = useCallback((_: React.MouseEvent) => {
+        if (!graph) return;
+
+        if (!panning && !boxSelect) saveDataSave();
+
+        panningSet(undefined);
+        boxSelectSet(undefined);
+        dragVertexSet(undefined);
+    }, [graph, screenToWorld, saveDataSave, panning, boxSelect]);
+
+    const onWheel = useCallback((e: React.WheelEvent) => {
+        // zoom
+        if (e.ctrlKey) zoomChange(e, e.deltaY < 0);
+        // pan left/right
+        else if (e.shiftKey) {
+            viewSet(v => {
+                return {...v, pan: new Vector2(v.pan.x - 0.5 * e.deltaY / Math.sqrt(v.zoom), v.pan.y)};
+            });
+        }
+        // pan up/down
+        else {
+            viewSet(v => {
+                return {...v, pan: new Vector2(v.pan.x, v.pan.y - 0.5 * e.deltaY / Math.sqrt(v.zoom))};
+            });
+        }
+    }, [zoomChange, view]);
+
+    // endregion canvas interactions
+
     const edgeClick = useCallback((e: React.MouseEvent, fromId: number, toid: number) => {
         if (e.button !== 0) return;
-        activeEdgeSet(new Vector2(fromId, toid));
-        graph.activeVertices = [];
-        e.stopPropagation();
+        /* graph.activeVertices = [fromId, toid];
+        e.stopPropagation();*/
     }, []);
 
     const vertexClick = useCallback((e: React.MouseEvent, v: Vertex, active: boolean) => {
@@ -743,10 +866,8 @@ export function GraphEditor({windowType, height, graph, saveDataSave, update, up
             if (!active) graph.activeVertices = [v.id];
 
             const mousePos = getMousePositionWorld(e);
-            dragVertexSet({vertex: v.id, mouseStartOffset: v.position.minus(mousePos)});
+            dragVertexSet({vertex: v.id, mouseStartOffset: v.position.minus(mousePos), ctrlKey: e.ctrlKey});
         }
-
-        activeEdgeSet(null);
 
         e.stopPropagation();
         e.preventDefault();
@@ -776,22 +897,42 @@ export function GraphEditor({windowType, height, graph, saveDataSave, update, up
         })
     }, [update, overlappingForbidden, showOverlappingForbidden])
 
+    const propertiesEdit = useCallback((graph: Graph, properties: PropertyData) => {
+        if(!graph || graph.activeVertices.length === 0) return;
+
+        // update current selection to changed properties
+        /*for(const vId of graph.activeVertices) {
+            const vertex = graph.vertexGet(vId);
+            if(!vertex) continue;
+
+            vertex.style =
+        }
+
+        updateSet(new Date());*/
+    }, []);
+
     return (
         <div className="flex flex-col border-r" style={{width: height + "vw"}}>
             <div className="flex gap-2 p-2 border-b">
-                {windowType === 'main' && <div className="pt-1 mx-2">
+                {/* Helper Hover */ windowType === 'main' && <div className="pt-1 mx-2">
                     <button className="mr-1 tooltip">
                         <kbd>?</kbd>
                         <div className="tooltiptext p-3" style={{width: "400px", zIndex: 99999}}>
                             <div className="p-2 border-b">
                                 <h2 className="font-bold">Graph Editor</h2>
                                 <ul>
-                                    <li>Create a graph by adding <kbd>V</kbd> vertices</li>
-                                    <li><kbd>Shift+Click</kbd>: to select multiple vertices</li>
-                                    <li><kbd>E</kbd>: to toggle edges between selected vertices</li>
+                                    <li>Create a graph by adding <kbd>V</kbd> vertices.</li>
+                                    <li><kbd>Shift+Click</kbd>: to select multiple vertices.</li>
+                                    <li><kbd>Drag&Drop</kbd>: to move selected vertices. Start
+                                        holding <kbd>Ctrl</kbd> to only move one single vertex.
+                                    </li>
+                                    <li><kbd>E</kbd>: to toggle edges between selected vertices.</li>
                                     <li><kbd>Click+Drag</kbd>: on the canvas for box selecting multiple vertices.
                                         Add <kbd>Shift</kbd> to add to the selection. Use <kbd>Ctrl</kbd> to remove
                                         from the selection.
+                                    </li>
+                                    <li>
+                                        Use <kbd>Ctrl+C</kbd> to copy and <kbd>Ctrl+V</kbd> paste selected vertices.
                                     </li>
                                 </ul>
                             </div>
@@ -799,7 +940,9 @@ export function GraphEditor({windowType, height, graph, saveDataSave, update, up
                                 <h2 className="font-bold">Navigation</h2>
                                 <ul>
                                     <li>Press and hold <kbd>Middle Mouse</kbd> to pan the view.
-                                        Or scroll up down on the trackpad - use <kbd>Shift+Scroll</kbd> to scroll to the side.</li>
+                                        Or <kbd>Scroll</kbd> up down on the trackpad - use <kbd>Shift+Scroll</kbd> to
+                                        scroll to the side.
+                                    </li>
                                     <li>Use <kbd>Ctrl+Mouse Wheel</kbd> to zoom in our out</li>
                                 </ul>
                             </div>
@@ -818,22 +961,28 @@ export function GraphEditor({windowType, height, graph, saveDataSave, update, up
                     </button>
                 </div>}
 
-                <button type="button"
-                        onClick={() => zoomChange(undefined, view.zoom, false)}>
+                <button type="button" className="tooltip"
+                        onClick={() => zoomChange(undefined, false)}>
                     <kbd>-</kbd>
+                    <div className="tooltiptext p-3" style={{zIndex: 99999}}>
+                        <kbd>Ctrl</kbd>+<kbd>-</kbd> Zoom out
+                    </div>
                 </button>
                 <button type="button" className={buttonClass}
                         onClick={() => viewSet({...view, zoom: 1})}>{Math.round(view.zoom * 100)}%
                 </button>
-                <button type="button"
-                        onClick={() => zoomChange(undefined, view.zoom, true)}>
+                <button type="button" className="tooltip"
+                        onClick={() => zoomChange(undefined, true)}>
                     <kbd>+</kbd>
+                    <div className="tooltiptext p-3" style={{zIndex: 99999}}>
+                        <kbd>Ctrl</kbd>+<kbd>+</kbd> Zoom in
+                    </div>
                 </button>
 
-                {windowType === 'main' && <div className="pt-1">
+                {/* keyboard shortcuts */ windowType === 'main' && <div className="pt-1">
                     <button className="mr-1 tooltip" onClick={() => keyboardAddVertex(graph)}>
                         <kbd>V</kbd>
-                        <div className="tooltiptext p-3">
+                        <div className="tooltiptext p-3" style={{zIndex: 99999}}>
                             <kbd>V</kbd> Add a vertex at the current mouse position.
                         </div>
                     </button>
@@ -879,22 +1028,20 @@ export function GraphEditor({windowType, height, graph, saveDataSave, update, up
                         </div>
                     </button>
 
-                    <div className="mr-1 tooltip">
-                        <kbd>Ctrl+C/V</kbd>
-                        <div className="tooltiptext p-3">
-                            <kbd>Ctrl+C</kbd> copy and <kbd>Ctrl+V</kbd> paste selected vertices.
-                        </div>
-                    </div>
-
-                    <button className="mr-1 tooltip"
-                            onClick={() => exportSelection(svgRef.current!, graph, graph.activeVertices)}>
-                        <kbd>Ctrl+Shift+S</kbd>
-                        <div className="tooltiptext">
-                            <kbd>Ctrl+Shift+S</kbd> Export the current selection as an SVG.<br/><br/>Note:
-                            The graph
-                            automatically saves after every edit.
+                    <button className="ml-4 tooltip">
+                        <kbd>Q</kbd>
+                        <div className="tooltiptext" style={{width: "300px"}}>
+                            <kbd>Q</kbd> Pick properties (line width, line color, line type,...) of the currently
+                            selected vertices.<br/><br/>
+                            <kbd>Shift+Q</kbd> Apply current properties to the currently
+                            selected vertices.<br/><br/>
+                            Use <kbd>Alt</kbd> to pick and apply to selected edges.<br/><br/>
                         </div>
                     </button>
+                </div>}
+
+                {/*properties display*/ properties && <div className="flex-row">
+                    <PropertiesDisplay graph={graph} properties={properties} propertiesChanged={propertiesEdit} />
                 </div>}
             </div>
             <div className="flex-1 relative">
@@ -976,7 +1123,8 @@ export function GraphEditor({windowType, height, graph, saveDataSave, update, up
                                 }}>
                             <kbd>Shift+F</kbd>
                             <div className="tooltiptext">
-                                <kbd>Shift+F</kbd> Toggle visibility of the list of forbidden subgraphs in the selection.
+                                <kbd>Shift+F</kbd> Toggle visibility of the list of forbidden subgraphs in the
+                                selection.
                             </div>
                         </button>
 
@@ -988,14 +1136,16 @@ export function GraphEditor({windowType, height, graph, saveDataSave, update, up
                                  left: 0,
                                  padding: 0
                              }}>
-                            <button className="block w-full mt-1 tooltip" onClick={keyboardToggleShowOverlappingForbidden}
+                            <button className="block w-full mt-1 tooltip"
+                                    onClick={keyboardToggleShowOverlappingForbidden}
                                     style={{
                                         padding: 0,
                                         border: 'none'
                                     }}>
                                 <kbd>Shift+F</kbd>
                                 <div className="tooltiptext">
-                                    <kbd>Shift+F</kbd> Toggle visibility of the list of forbidden subgraphs in the selection.
+                                    <kbd>Shift+F</kbd> Toggle visibility of the list of forbidden subgraphs in the
+                                    selection.
                                 </div>
                             </button>
                             {overlappingForbidden.forbidden.length} forbidden in selection
@@ -1012,7 +1162,124 @@ export function GraphEditor({windowType, height, graph, saveDataSave, update, up
     );
 }
 
-const GraphRender = React.memo(function GraphVerticesAndEdges(props: {
+type PropertyDataColor = 'lineColor' | 'bgColor' | 'textColor';
+const PropertiesDisplay = React.memo((props: {
+    graph: Graph,
+    properties: PropertyData,
+    propertiesChanged: (g: Graph, p: PropertyData) => void,
+}) => {
+    const [_, updateSet] = useState<Date>(new Date());
+
+    const propertiesChanged = useCallback(() => {
+        props.propertiesChanged(props.graph, props.properties);
+    }, [props.graph, props.properties, props.propertiesChanged]);
+
+    const popover = useRef<HTMLDivElement | null>(null);
+    const [colorOpen, colorOpenSet] = useState<PropertyDataColor>();
+
+    const colorOpenSetWithWait = useCallback(async (c: PropertyDataColor) => {
+        await PromiseWait(3)
+        colorOpenSet(c);
+    }, [colorOpenSet]);
+    const doColorClose = useCallback(() => colorOpenSet(undefined), [colorOpenSet]);
+    useClickOutside(popover, doColorClose);
+
+    const titleGet = useCallback((c: PropertyDataColor|undefined) => {
+        switch (c) {
+            case 'lineColor':
+                return <span>Line Color</span>
+            case 'bgColor':
+                return <span>Vertex Fill Color</span>
+            case 'textColor':
+                return <span>Text Color</span>
+            case undefined:
+                break;
+            default:
+                console.error("property data color unknown: ", c);
+                break;
+        }
+        return <></>
+    }, []);
+    const colorGet = useCallback((p: PropertyData, c: PropertyDataColor|undefined) => {
+        switch (c) {
+            case 'lineColor':
+                return p.vertexStyle.lineStyle.color;
+            case 'bgColor':
+                return p.vertexStyle.bgColor;
+            case 'textColor':
+                return p.vertexStyle.textColor;
+            case undefined:
+                break;
+            default:
+                console.error("property data color unknown: ", c);
+                break;
+        }
+        return '#000000';
+    }, []);
+    const colorSet = useCallback((p: PropertyData, c: PropertyDataColor|undefined, v: string) => {
+        switch (c) {
+            case 'lineColor':
+                p.vertexStyle.lineStyle.color = v;
+                break;
+            case 'bgColor':
+                p.vertexStyle.bgColor = v;
+                break;
+            case 'textColor':
+                p.vertexStyle.textColor = v;
+                break;
+            case undefined:
+                break;
+            default:
+                console.error("property data color unknown: ", c);
+                break;
+        }
+        propertiesChanged();
+    }, [propertiesChanged]);
+
+    return <>
+        <div className="relative">
+            <button className="swatch text-outline font-bold mr-2"
+                 style={{color: props.properties.vertexStyle.bgColor}}
+                 onClick={() => colorOpenSetWithWait('bgColor')}
+            >
+                BG
+            </button>
+            <button className="swatch font-bold mr-2"
+                 style={{color: props.properties.vertexStyle.lineStyle.color}}
+                 onClick={() => colorOpenSetWithWait('lineColor')}
+            >
+                Li
+            </button>
+            <button className="swatch font-bold mr-2"
+                 style={{color: props.properties.vertexStyle.textColor}}
+                 onClick={() => colorOpenSetWithWait('textColor')}
+            >
+                T
+            </button>
+
+            {/* color picker */}
+            <div ref={popover} className="popover bg-white" style={{display: colorOpen ? 'block' : 'none'}}>
+                <h4 className="text-center p-1">
+                    {titleGet(colorOpen)}
+                </h4>
+                {colorOpen && <>
+                    <HexColorPicker color={colorGet(props.properties, colorOpen)} onChange={v => {
+                        colorSet(props.properties, colorOpen, v);
+                        updateSet(new Date());
+                    }}/>
+                    <div className="text-center">
+                        <input className='my-2 text-center' type='text' value={colorGet(props.properties, colorOpen)} onChange={v => {
+                            colorSet(props.properties, colorOpen, v.target.value);
+                            updateSet(new Date());
+                        }} />
+                    </div>
+                </>}
+            </div>
+        </div>
+    </>;
+})
+
+const GraphRender = React.memo((props: {
     graph: Graph,
     activeEdge?: Vector2,
     activeVertices: number[],
@@ -1020,7 +1287,7 @@ const GraphRender = React.memo(function GraphVerticesAndEdges(props: {
 
     edgeClick: (e: React.MouseEvent, fromId: number, toId: number) => void,
     vertexClick: (e: React.MouseEvent, vertex: Vertex, active: boolean) => void,
-}) {
+}) => {
     // console.log('graph re-render')
 
     const renderEdges = useCallback((graph: Graph) => {
@@ -1049,6 +1316,9 @@ const GraphRender = React.memo(function GraphVerticesAndEdges(props: {
                 const endpointBothActive = fromActive && toActive;
 
                 const lineStyle = graph.edgeStyle.get(v.id)?.get(nId) ?? LineStyleDefault();
+                const forbidden = graph.edgesForbidden.get(v.id)?.has(nId);
+
+                const color = forbidden ? '#ff0000' : lineStyle.color;
                 lines.push(
                     <line
                         key={key + "-bg"}
@@ -1067,7 +1337,7 @@ const GraphRender = React.memo(function GraphVerticesAndEdges(props: {
                         data-edge-from={v.id} data-edge-to={n.id}
                         x1={v.position.x} y1={v.position.y}
                         x2={n.position.x} y2={n.position.y}
-                        stroke={endpointActive ? ColorHexSetTransparency(lineStyle.color, endpointBothActive ? 'c0' : 'a0') : lineStyle.color}
+                        stroke={endpointActive ? ColorHexSetTransparency(color, endpointBothActive ? 'a0' : '80') : color + '40'}
                         strokeWidth={(endpointActive ? (endpointBothActive ? 2 : 1) : 0) + weightToWidth(lineStyle.weight)}
                         strokeDasharray={(endpointActive && !endpointBothActive) || lineStyle.type === "dashed" ? "6,8" : lineStyle.type === "dotted" ? "2,4" : undefined}
                         onClick={e => props.edgeClick(e, v.id, nId)}
@@ -1078,6 +1348,24 @@ const GraphRender = React.memo(function GraphVerticesAndEdges(props: {
         return lines;
     }, [props.activeEdge, props.activeVertices]);
 
+    const vertexLabel = useCallback((v: Vertex, style?: VertexStyle) => {
+        switch (style?.show ?? 'id:label') {
+            case 'id:label':
+                break;
+            case 'id':
+                return v.id;
+            case 'label':
+                return v.label;
+            case 'none':
+                return '';
+            default:
+                console.error('drawing vertex: style.show unknown: ', style?.show);
+                break;
+        }
+        if(v.label) return v.id + ':' + v.label;
+        return v.id;
+    }, []);
+
     const renderVertices = useCallback((graph: Graph) => {
         if (!graph) return;
         const activeVertices = props.activeVertices;
@@ -1085,7 +1373,9 @@ const GraphRender = React.memo(function GraphVerticesAndEdges(props: {
         const nodes: JSX.Element[] = [];
         for (const v of graph.vertices.values()) {
             const active = activeVertices.includes(v.id);
-            const lineStyle = v.lineStyle ?? LineStyleDefault();
+            const style = v.style ?? VertexStyleDefault();
+            const label = vertexLabel(v, style);
+
             nodes.push(
                 <g key={v.id}
                    data-vertex={v.id}
@@ -1093,21 +1383,22 @@ const GraphRender = React.memo(function GraphVerticesAndEdges(props: {
                 >
                     <circle
                         cx={v.position.x} cy={v.position.y}
-                        r={vertexRadius}
-                        fill={v.color}
-                        stroke={active ? 'orange' : v.lineStyle.color}
-                        strokeWidth={weightToWidth(lineStyle.weight)}
-                        strokeDasharray={v.disabled || lineStyle.type === "dashed" ? "6,8" : lineStyle.type === "dotted" ? "2,4" : undefined}
+                        r={style.radius}
+                        fill={style.bgColor}
+                        stroke={style.lineStyle.color}
+                        strokeWidth={(active ? 1.5 : 0) + weightToWidth(style.lineStyle.weight)}
+                        strokeDasharray={v.disabled || style.lineStyle.type === "dashed" ? "6,8" : style.lineStyle.type === "dotted" ? "2,4" : undefined}
                     />
-                    <text
+                    {label && <text
                         className="select-none"
                         x={v.position.x} y={v.position.y}
+                        fill={style.textColor}
                         fontSize={14}
                         textAnchor="middle"
                         dominantBaseline="middle"
                     >
-                        {v.label ? `${v.id}:${v.label}` : v.id}
-                    </text>
+                        {label}
+                    </text>}
                 </g>
             );
         }

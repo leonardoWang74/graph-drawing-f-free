@@ -1,5 +1,5 @@
 import Vector2 from "@/app/data/Vector2";
-import {LineStyle} from "@/app/data/Graph";
+import {LineStyle, VertexStyleDefault} from "@/app/data/Graph";
 
 export interface VertexData {
     id: number;
@@ -11,8 +11,21 @@ export interface VertexData {
 
     neighbors: number[];
 
-    color: string;
+    style: VertexStyle;
+}
+
+export type VertexShowOptions = 'id:label' | 'id' | 'label' | 'none';
+
+export interface VertexStyle {
+    show: VertexShowOptions;
+    radius: number;
+    textColor: string;
+    bgColor: string;
     lineStyle: LineStyle;
+}
+export function VertexStyleClone(style: VertexStyle): VertexStyle {
+    if(style === undefined) return VertexStyleDefault();
+    return JSON.parse(JSON.stringify(style));
 }
 
 export class Vertex {
@@ -21,8 +34,7 @@ export class Vertex {
     public position: Vector2;
     public disabled: boolean;
 
-    public color: string = 'white';
-    public lineStyle: LineStyle = {color: "black", weight: 'normal', type: 'solid'};
+    public style: VertexStyle;
 
     public neighbors: Set<number> = new Set<number>();
 
@@ -73,16 +85,7 @@ export class Vertex {
     }
 
     /** filter edges based on subgraph vertices */
-    public subgraphFilter(vertices: Set<number>): void {
-        // remove neighbors not in the vertices set
-        for(const n of this.neighbors) {
-            if(vertices.has(n)) continue;
-            this.neighbors.delete(n);
-        }
-    }
-
-    /** filter edges based on subgraph vertices */
-    public subgraphFilterArray(vertices: number[]): void {
+    public subgraphFilter(vertices: number[]): void {
         // remove neighbors not in the vertices set
         for(const n of this.neighbors) {
             if(vertices.includes(n)) continue;
@@ -102,6 +105,7 @@ export class Vertex {
         vertex.label = data.label;
         vertex.disabled = data.disabled ?? false;
         vertex.position = new Vector2(data.x, data.y);
+        vertex.style = data.style ?? VertexStyleDefault();
         return vertex;
     }
 
@@ -116,8 +120,7 @@ export class Vertex {
 
             neighbors: Array.from(this.neighbors).filter(to => to >= this.id),
 
-            color: this.color,
-            lineStyle: this.lineStyle,
+            style: VertexStyleClone(this.style)
         };
     }
 }

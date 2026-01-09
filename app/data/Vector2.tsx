@@ -13,6 +13,13 @@ export default class Vector2 {
     public minus(b: Vector2): Vector2 {
         return new Vector2(this.x - b.x, this.y - b.y);
     }
+    public round(): Vector2 {
+        return new Vector2(Math.round(this.x), Math.round(this.y));
+    }
+    public grid(gridSize: number): Vector2 {
+        if(gridSize<=1) return new Vector2(this.x, this.y);
+        return new Vector2(Math.round(this.x/gridSize)*gridSize, Math.round(this.y/gridSize)*gridSize);
+    }
 
     public toString() : string {
         return `(${this.x}, ${this.y})`;
