@@ -6,8 +6,7 @@ import Graph, {
     LineStyle,
     LineStyleClone,
     LineStyleDefault,
-    VertexStyleDefault,
-    weightToWidth
+    VertexStyleDefault
 } from "@/app/data/Graph";
 import {Vertex, VertexStyle, VertexStyleClone} from "@/app/data/Vertex";
 import Vector2 from "@/app/data/Vector2";
@@ -1326,7 +1325,7 @@ const GraphRender = React.memo((props: {
                         x1={v.position.x} y1={v.position.y}
                         x2={n.position.x} y2={n.position.y}
                         stroke={active ? 'orange' : '#ffffff02'}
-                        strokeWidth={(active ? 0 : 16) + weightToWidth(lineStyle.weight)}
+                        strokeWidth={(active ? 0 : 16) + lineStyle.weight}
                         strokeDasharray={lineStyle.type === "dashed" ? "6,4" : lineStyle.type === "dotted" ? "2,4" : undefined}
                         onClick={e => props.edgeClick(e, v.id, nId)}
                     />
@@ -1338,7 +1337,7 @@ const GraphRender = React.memo((props: {
                         x1={v.position.x} y1={v.position.y}
                         x2={n.position.x} y2={n.position.y}
                         stroke={endpointActive ? ColorHexSetTransparency(color, endpointBothActive ? 'a0' : '80') : color + '40'}
-                        strokeWidth={(endpointActive ? (endpointBothActive ? 2 : 1) : 0) + weightToWidth(lineStyle.weight)}
+                        strokeWidth={(endpointActive ? (endpointBothActive ? 2 : 1) : 0) + lineStyle.weight}
                         strokeDasharray={(endpointActive && !endpointBothActive) || lineStyle.type === "dashed" ? "6,8" : lineStyle.type === "dotted" ? "2,4" : undefined}
                         onClick={e => props.edgeClick(e, v.id, nId)}
                     />
@@ -1386,7 +1385,7 @@ const GraphRender = React.memo((props: {
                         r={style.radius}
                         fill={style.bgColor}
                         stroke={style.lineStyle.color}
-                        strokeWidth={(active ? 1.5 : 0) + weightToWidth(style.lineStyle.weight)}
+                        strokeWidth={(active ? 1.5 : 0) + style.lineStyle.weight}
                         strokeDasharray={v.disabled || style.lineStyle.type === "dashed" ? "6,8" : style.lineStyle.type === "dotted" ? "2,4" : undefined}
                     />
                     {label && <text

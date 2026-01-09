@@ -14,12 +14,11 @@ export interface GraphData {
 }
 
 export type LineType = "solid" | "dashed" | "dotted";
-export type LineWeight = "thin" | "normal" | "heavy" | "fat" | number;
 
 export interface LineStyle {
     color: string;
     type: LineType;
-    weight: LineWeight;
+    weight: number;
 }
 export function LineStyleClone(style: LineStyle): LineStyle {
     return JSON.parse(JSON.stringify(style));
@@ -28,7 +27,7 @@ export function LineStyleClone(style: LineStyle): LineStyle {
 export function LineStyleDefault(): LineStyle {
     return {
         color: "#000000",
-        weight: "thin",
+        weight: 1,
         type: "solid"
     };
 }
@@ -42,21 +41,6 @@ export function VertexStyleDefault(): VertexStyle {
         lineStyle: LineStyleDefault(),
     };
 }
-
-export const weightToWidth = (lw: LineWeight): number => {
-    switch (lw) {
-        case 'thin':
-            return 1;
-        case 'normal':
-            return 1;
-        case 'heavy':
-            return 1;
-        case 'fat':
-            return 1;
-        default:
-            return +lw;
-    }
-};
 
 export default class Graph {
     public id: number;
