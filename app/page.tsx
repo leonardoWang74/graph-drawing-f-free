@@ -11,7 +11,7 @@ import Graph, {
 import {Vertex, VertexStyle, VertexStyleClone} from "@/app/data/Vertex";
 import Vector2 from "@/app/data/Vector2";
 import {DateToLocalWithTime} from "@/app/util/DateUtils";
-import {ArrayEquals} from "@/app/util/ArrayUtils";
+import {ArrayContainsAll, ArrayEquals} from "@/app/util/ArrayUtils";
 import {ColorHexSetTransparency} from "@/app/util/ColorUtils";
 import {HexColorPicker} from "react-colorful";
 import useClickOutside from "@/app/hooks/useClickOutside";
@@ -142,19 +142,32 @@ export default function GraphWindow() {
         if (graph.activeVertices.length > 0) activeGraph = graph.getSubgraph(graph.activeVertices);
 
         // find induced forbidden subgraphs
-        const inducedForbidden: Graph[] = [];
+        const timeStartLook = new Date();
+        Graph.timeCheckingEdges = 0;
+        Graph.timeGettingSubgraphSearch = 0;
+        Graph.timeGettingSubgraphCheck = 0;
+        const inducedForbidden: number[][] = [];
         for (const forbidden of components) {
             inducedForbidden.push(...activeGraph.inducedSubgraphs(forbidden));
+            console.log('inducedForbidden:', inducedForbidden.length, ' in miliseconds: ', new Date()-timeStartLook);
         }
         graph.forbiddenInduced = inducedForbidden;
-        console.log('inducedForbidden', inducedForbidden);
+        console.log('found inducedForbidden:', inducedForbidden.length, ' in miliseconds: ', new Date()-timeStartLook + "\n",
+            `Graph.timeCheckingEdges: ${Graph.timeCheckingEdges} ms\n`,
+            `Graph.timeGettingSubgraphSearch: ${Graph.timeGettingSubgraphSearch} ms\n`,
+            `Graph.timeGettingSubgraphCheck: ${Graph.timeGettingSubgraphCheck} ms\n`,
+        );
         console.log('################################################');
 
         // mark the induced forbidden subgraphs with red edges
         graph.edgesForbidden.clear();
         for (const subgraph of inducedForbidden) {
-            for (const v of subgraph.vertices.values()) {
+            for (const vId of subgraph) {
+                const v = graph.vertexGet(vId);
+                if(!v) continue;
                 for (const v2 of v.neighbors) {
+                    if(!subgraph.includes(v2)) continue;
+
                     if (!graph.edgesForbidden.has(v.id)) graph.edgesForbidden.set(v.id, new Set<number>());
                     graph.edgesForbidden.get(v.id)?.add(v2);
                 }
@@ -196,15 +209,23 @@ export default function GraphWindow() {
 
     return (
         <div className="flex flex-col h-screen overflow-hidden">
-            <div className="flex gap-2 p-2 border-b border-r">
-                <div className="h-100% pt-1 ml-2">Induced Forbidden Subgraphs</div>
-
+            <div className="flex gap-2 p-2 border-b border-r ml-3">
                 <button className="tooltip" onClick={getForbiddenSubgraphs}>
                     <kbd>F</kbd>
-                    <div className="tooltiptext">Find induced forbidden subgraphs in the selection</div>
+                    <div className="tooltiptext" style={{zIndex: 99999, width: "300px"}}>
+                        <kbd>F</kbd> Find induced forbidden subgraphs in the selection.
+                        <br/><br/>
+                        The left (big) window is the main window containing the graph.
+                        The right (smaller) window contains the forbidden subgraphs - every component is
+                        one forbidden subgraph.
+                    </div>
                 </button>
-
-                <div className="h-100% pt-1 ml-1">Found: {graph?.forbiddenInduced.length ?? 0}</div>
+                <button className="tooltip" onClick={getForbiddenSubgraphs}>
+                    <kbd>C</kbd>
+                    <div className="tooltiptext" style={{zIndex: 99999, width: "300px"}}>
+                        <kbd>F</kbd> Find maximal cliques in the selection using Bron-Kerbosch adapted by [Eppstein et al 2010 - Listing All Maximal Cliques in Sparse Graphs in Near-optimal Time].
+                    </div>
+                </button>
             </div>
             <div className="flex flex-row h-screen">
                 {graph && saveData &&
@@ -286,9 +307,18 @@ export function GraphEditor({
     const [clipboard, clipboardSet] = useState<ClipboardData>();
 
     const [showOverlappingForbidden, showOverlappingForbiddenSet] = useState(true);
-    const [overlappingForbidden, _] = useState<{ activeVertices: number[], forbidden: Graph[] }>({
+    const [overlappingData, _] = useState<{
+        activeVertices: number[],
+        forbidden: number[][],
+        forbiddenNot: number[][],
+        cliques: Set<number>[],
+        cliquesNot: Set<number>[],
+    }>({
         activeVertices: [],
-        forbidden: []
+        forbidden: [],
+        forbiddenNot: [],
+        cliques: [],
+        cliquesNot: [],
     });
 
     /** =========================
@@ -461,7 +491,28 @@ export function GraphEditor({
         showOverlappingForbiddenSet(v => !v);
     }, []);
 
-    // keyboard functions without any dependencies
+    const keyboardMaximalCliques = useCallback((graph: Graph) => {
+        const now = new Date();
+        graph.cliquesMaximal = graph.getSubgraphAlgorithm(graph.activeVertices).getMaximalCliques();
+        const duration = new Date() - now;
+
+        // remove number of cliques in selection
+        for(const vId of graph.activeVertices) {
+            graph.cliqueVertexCounts.delete(vId);
+        }
+
+        // count number of cliques per vertex
+        for(const subgraph of graph.cliquesMaximal) {
+            for(const vId of subgraph) {
+                graph.cliqueVertexCounts.set(vId, (graph.cliqueVertexCounts.get(vId) ?? 0) + 1)
+            }
+        }
+
+        console.log('found maximal cliques: ', graph.cliquesMaximal.length, ` in time ${duration} ms`)
+        updateSet(new Date());
+    }, []);
+
+    // keyboard functions without any dependencies except graph
     useEffect(() => {
         const onKey = (e: KeyboardEvent) => {
             if (!graph || !graph.active) return;
@@ -500,6 +551,12 @@ export function GraphEditor({
             // "shift+F": toggle showing overlapping
             else if (e.key === "F") {
                 keyboardToggleShowOverlappingForbidden();
+                e.preventDefault();
+            }
+            // "C": find maximal cliques
+            else if (e.key === "c" || e.key === "C") {
+                if(e.ctrlKey) return;
+                keyboardMaximalCliques(graph);
                 e.preventDefault();
             }
         };
@@ -559,7 +616,6 @@ export function GraphEditor({
                         graph: graph.getSubgraph(graph.activeVertices),
                         mouseWorld: screenToWorld(mouseLast.screen),
                     });
-                    e.preventDefault();
                 }
             }
             // paste / add vertex
@@ -582,13 +638,17 @@ export function GraphEditor({
             }
             // "+": zoom in
             else if (e.key === "+") {
-                zoomChange(undefined, true, mouseLast.screen);
-                e.preventDefault();
+                if(e.ctrlKey) {
+                    zoomChange(undefined, true, mouseLast.screen);
+                    e.preventDefault();
+                }
             }
             // "-": zoom in
             else if (e.key === "-") {
-                zoomChange(undefined, false, mouseLast.screen);
-                e.preventDefault();
+                if(e.ctrlKey) {
+                    zoomChange(undefined, false, mouseLast.screen);
+                    e.preventDefault();
+                }
             }
         };
         window.addEventListener("keydown", onKey);
@@ -622,11 +682,12 @@ export function GraphEditor({
         // pick the first we find
         for (const fromId of graph.activeVertices) {
             for (const toId of graph.activeVertices) {
-                if (fromId === toId) continue;
+                if (fromId >= toId) continue;
+                if (!graph.vertexGet(fromId)?.neighbors.has(toId)) continue;
 
-                const lineStyle = LineStyleClone(graph.edgeStyle.get(fromId)?.get(toId) ?? LineStyleDefault());
+                const lineStyle = graph.edgeStyle.get(fromId)?.get(toId) ?? LineStyleDefault();
                 propertiesSet(p => {
-                    return {...p, vertexStyle: {...p.vertexStyle, lineStyle: lineStyle}};
+                    return {...p, vertexStyle: {...p.vertexStyle, lineStyle: LineStyleClone(lineStyle)}};
                 });
                 return;
             }
@@ -658,6 +719,8 @@ export function GraphEditor({
 
             // "q": properties
             if (e.key === "q" || e.key === "Q") {
+                if(e.ctrlKey) return;
+
                 // affect vertices
                 if(!e.altKey) {
                     // apply properties
@@ -876,25 +939,80 @@ export function GraphEditor({
     const renderOverlappingForbidden = useCallback((graph: Graph) => {
         if (!graph || !showOverlappingForbidden) return [];
         const activeVertices = graph.activeVertices;
-        const activeVerticesElements = activeVertices.join(',');
+        const activeVerticesString = activeVertices.join(',');
 
         // update filtered graphs if selection changed
-        if (!ArrayEquals(graph.activeVertices, overlappingForbidden.activeVertices)) {
-            overlappingForbidden.activeVertices = [...graph.activeVertices];
-            overlappingForbidden.forbidden = activeVertices.length > 0 ? graph.forbiddenInduced.filter(g => g.containsVertices(activeVertices)) : graph.forbiddenInduced;
+        if (!ArrayEquals(graph.activeVertices, overlappingData.activeVertices)) {
+            overlappingData.activeVertices = [...graph.activeVertices];
+
+            overlappingData.forbidden = [];
+            overlappingData.forbiddenNot = [];
+
+            overlappingData.cliques = [];
+            overlappingData.cliquesNot = [];
+
+            if(activeVertices.length > 0) {
+                for(const g of graph.forbiddenInduced) {
+                    if(ArrayContainsAll(g, activeVertices)) {
+                        overlappingData.forbidden.push(g);
+                    } else {
+                        overlappingData.forbiddenNot.push(g);
+                    }
+                }
+
+                for(const g of graph.cliquesMaximal) {
+                    if(ArrayContainsAll(Array.from(g), activeVertices)) {
+                        overlappingData.cliques.push(g);
+                    } else {
+                        overlappingData.cliquesNot.push(g);
+                    }
+                }
+            }
+            else {
+                overlappingData.forbidden = graph.forbiddenInduced;
+                overlappingData.cliques = graph.cliquesMaximal;
+            }
         }
 
-        return overlappingForbidden.forbidden.map((g: Graph, index: number) => {
-            const ownVertices = g.vertices.values().map(v => v.id).toArray();
-            return <button key={index} className="block border-b w-full cursor" onClick={() => {
-                graph.activeVertices = ownVertices;
-                updateSet(new Date());
-            }}>
-                <span className="font-bold mr-2">{activeVerticesElements}</span>
-                <span>{ownVertices.filter(v => !activeVertices.includes(v)).join(',')}</span>
-            </button>
-        })
-    }, [update, overlappingForbidden, showOverlappingForbidden])
+        return {
+            forbidden: overlappingData.forbidden.map((ownVertices: number[], index: number) => {
+                return <button key={index} className="block border-b w-full cursor" onClick={() => {
+                    graph.activeVertices = ownVertices;
+                    updateSet(new Date());
+                }}>
+                    <span className="font-bold mr-2">{activeVerticesString}</span>
+                    <span>{ownVertices.filter(v => !activeVertices.includes(v)).join(',')}</span>
+                </button>
+            }),
+            forbiddenNot: overlappingData.forbiddenNot.map((ownVertices: number[], index: number) => {
+                return <button key={index} className="block border-b w-full cursor" onClick={() => {
+                    graph.activeVertices = ownVertices;
+                    updateSet(new Date());
+                }}>
+                    <span>{ownVertices.join(',')}</span>
+                </button>
+            }),
+            cliques: overlappingData.cliques.map((set, index: number) => {
+                const ownVertices = Array.from(set);
+                return <button key={index} className="block border-b w-full cursor" onClick={() => {
+                    graph.activeVertices = ownVertices;
+                    updateSet(new Date());
+                }}>
+                    <span className="font-bold mr-2">{activeVerticesString}</span>
+                    <span>{ownVertices.filter(v => !activeVertices.includes(v)).join(',')}</span>
+                </button>
+            }),
+            cliquesNot: overlappingData.cliquesNot.map((set, index: number) => {
+                const ownVertices = Array.from(set);
+                return <button key={index} className="block border-b w-full cursor" onClick={() => {
+                    graph.activeVertices = ownVertices;
+                    updateSet(new Date());
+                }}>
+                    <span>{ownVertices.join(',')}</span>
+                </button>
+            }),
+        }
+    }, [update, overlappingData, showOverlappingForbidden]);
 
     const propertiesEdit = useCallback((graph: Graph, properties: PropertyData) => {
         if(!graph || graph.activeVertices.length === 0) return;
@@ -909,6 +1027,11 @@ export function GraphEditor({
 
         updateSet(new Date());*/
     }, []);
+
+    let overlapping = undefined;
+    if(windowType === 'main') {
+        overlapping = renderOverlappingForbidden(graph);
+    }
 
     return (
         <div className="flex flex-col border-r" style={{width: height + "vw"}}>
@@ -943,17 +1066,6 @@ export function GraphEditor({
                                         scroll to the side.
                                     </li>
                                     <li>Use <kbd>Ctrl+Mouse Wheel</kbd> to zoom in our out</li>
-                                </ul>
-                            </div>
-                            <div className="p-2 border-b">
-                                <h2 className="font-bold">Forbidden Subgraphs</h2>
-                                <ul>
-                                    <li>The left (big) window is the main window containing the graph.</li>
-                                    <li>The right (smaller) window contains the forbidden subgraphs - every component is
-                                        one forbidden subgraph.
-                                    </li>
-                                    <li>Press <kbd>F</kbd> to find forbidden subgraphs in the selection.
-                                    </li>
                                 </ul>
                             </div>
                         </div>
@@ -1040,7 +1152,7 @@ export function GraphEditor({
                 </div>}
 
                 {/*properties display*/ properties && <div className="flex-row">
-                    <PropertiesDisplay graph={graph} properties={properties} propertiesChanged={propertiesEdit} />
+                    <PropertiesDisplay graph={graph} properties={properties} propertiesChanged={propertiesEdit} updateGraph={() => updateSet(new Date())} />
                 </div>}
             </div>
             <div className="flex-1 relative">
@@ -1147,12 +1259,22 @@ export function GraphEditor({
                                     selection.
                                 </div>
                             </button>
-                            {overlappingForbidden.forbidden.length} forbidden in selection
+                            {overlappingData.forbidden.length} forbidden in selection
                             <div className="overflow-y-auto border-y"
                                  style={{
                                      maxHeight: "160px"
                                  }}>
-                                {renderOverlappingForbidden(graph)}
+                                {overlapping && overlapping.forbidden}
+                                {overlapping && overlapping.forbiddenNot}
+                            </div>
+
+                            {overlappingData.cliques.length} maximal cliques in selection
+                            <div className="overflow-y-auto border-y"
+                                 style={{
+                                     maxHeight: "160px"
+                                 }}>
+                                {overlapping && overlapping.cliques}
+                                {overlapping && overlapping.cliquesNot}
                             </div>
                         </div>
                     </div>}
@@ -1161,11 +1283,80 @@ export function GraphEditor({
     );
 }
 
-type PropertyDataColor = 'lineColor' | 'bgColor' | 'textColor';
+type PropertyDataFieldName =
+    'lineColor' | 'bgColor' | 'textColor' // color fields
+    | 'radius' | 'lineWidth' // number fields
+;
+function VertexGetterByPropertyDataFieldName(c: PropertyDataFieldName | undefined): undefined | ((vertex: Vertex) => string|number) {
+    switch (c) {
+        case 'lineColor':
+            return v => v.style.lineStyle.color;
+        case 'bgColor':
+            return v => v.style.bgColor;
+        case 'textColor':
+            return v => v.style.textColor;
+        case 'radius':
+            return v => v.style.radius;
+        case 'lineWidth':
+            return v => v.style.lineStyle.weight;
+        case undefined:
+            return undefined;
+        default:
+            console.error("property data color unknown: ", c);
+            return undefined;
+    }
+}
+function VertexSetterByPropertyDataFieldName(c: PropertyDataFieldName | undefined): undefined | ((vertex: Vertex, value: string|number) => void) {
+    switch (c) {
+        case 'lineColor':
+            return (v, value) => v.style.lineStyle.color = ''+value;
+        case 'bgColor':
+            return (v, value) => v.style.bgColor = ''+value;
+        case 'textColor':
+            return (v, value) => v.style.textColor = ''+value;
+        case 'radius':
+            return (v, value) => v.style.radius = +value;
+        case 'lineWidth':
+            return (v, value) => v.style.lineStyle.weight = +value;
+        case undefined:
+            return undefined;
+        default:
+            console.error("property data color unknown: ", c);
+            return undefined;
+    }
+}
+function EdgeSetterByPropertyDataFieldName(c: PropertyDataFieldName | undefined): undefined | ((style: LineStyle, value: string|number) => void) {
+    switch (c) {
+        case 'lineColor':
+            return (style, value) => style.color = ''+value;
+        case 'lineWidth':
+            return (style, value) => style.weight = +value;
+        case undefined:
+            return undefined;
+        default:
+            console.error("property data unknown (or not applicable): ", c);
+            return undefined;
+    }
+}
+function EdgeGetterByPropertyDataFieldName(c: PropertyDataFieldName | undefined): undefined | ((style: LineStyle) => string|number) {
+    switch (c) {
+        case 'lineColor':
+            return style => style.color;
+        case 'lineWidth':
+            return style => style.weight;
+        case undefined:
+            return undefined;
+        default:
+            console.error("property data unknown (or not applicable): ", c);
+            return undefined;
+    }
+}
+
 const PropertiesDisplay = React.memo((props: {
     graph: Graph,
     properties: PropertyData,
     propertiesChanged: (g: Graph, p: PropertyData) => void,
+    updateGraph: () => void,
 }) => {
     const [_, updateSet] = useState<Date>(new Date());
 
@@ -1174,16 +1365,27 @@ const PropertiesDisplay = React.memo((props: {
     }, [props.graph, props.properties, props.propertiesChanged]);
 
     const popover = useRef<HTMLDivElement | null>(null);
-    const [colorOpen, colorOpenSet] = useState<PropertyDataColor>();
+    const [colorOpen, colorOpenSet] = useState<PropertyDataFieldName>();
+    const [numberOpen, numberOpenSet] = useState<PropertyDataFieldName>();
 
-    const colorOpenSetWithWait = useCallback(async (c: PropertyDataColor) => {
+    const colorOpenSetWithWait = useCallback(async (current: PropertyDataFieldName|undefined, c: PropertyDataFieldName) => {
+        if(current === c) return;
         await PromiseWait(3)
         colorOpenSet(c);
     }, [colorOpenSet]);
-    const doColorClose = useCallback(() => colorOpenSet(undefined), [colorOpenSet]);
-    useClickOutside(popover, doColorClose);
+    const numberOpenSetWithWait = useCallback(async (current: PropertyDataFieldName|undefined, c: PropertyDataFieldName) => {
+        if(current === c) return;
+        await PromiseWait(3)
+        numberOpenSet(c);
+    }, [numberOpenSet]);
 
-    const titleGet = useCallback((c: PropertyDataColor|undefined) => {
+    const doClose = useCallback(() => {
+        colorOpenSet(undefined);
+        numberOpenSet(undefined);
+    }, [colorOpenSet]);
+    useClickOutside(popover, doClose);
+
+    const titleGet = useCallback((c: PropertyDataFieldName|undefined) => {
         switch (c) {
             case 'lineColor':
                 return <span>Line Color</span>
@@ -1191,6 +1393,10 @@ const PropertiesDisplay = React.memo((props: {
                 return <span>Vertex Fill Color</span>
             case 'textColor':
                 return <span>Text Color</span>
+            case 'radius':
+                return <span>Vertex Radius</span>
+            case 'lineWidth':
+                return <span>Line Width</span>
             case undefined:
                 break;
             default:
@@ -1199,7 +1405,7 @@ const PropertiesDisplay = React.memo((props: {
         }
         return <></>
     }, []);
-    const colorGet = useCallback((p: PropertyData, c: PropertyDataColor|undefined) => {
+    const propertyGet = useCallback((p: PropertyData, c: PropertyDataFieldName|undefined) => {
         switch (c) {
             case 'lineColor':
                 return p.vertexStyle.lineStyle.color;
@@ -1207,6 +1413,10 @@ const PropertiesDisplay = React.memo((props: {
                 return p.vertexStyle.bgColor;
             case 'textColor':
                 return p.vertexStyle.textColor;
+            case 'radius':
+                return p.vertexStyle.radius;
+            case 'lineWidth':
+                return p.vertexStyle.lineStyle.weight;
             case undefined:
                 break;
             default:
@@ -1215,7 +1425,7 @@ const PropertiesDisplay = React.memo((props: {
         }
         return '#000000';
     }, []);
-    const colorSet = useCallback((p: PropertyData, c: PropertyDataColor|undefined, v: string) => {
+    const propertySet = useCallback((p: PropertyData, c: PropertyDataFieldName|undefined, v: string) => {
         switch (c) {
             case 'lineColor':
                 p.vertexStyle.lineStyle.color = v;
@@ -1226,6 +1436,12 @@ const PropertiesDisplay = React.memo((props: {
             case 'textColor':
                 p.vertexStyle.textColor = v;
                 break;
+            case 'radius':
+                p.vertexStyle.radius = +v;
+                break;
+            case 'lineWidth':
+                p.vertexStyle.lineStyle.weight = +v;
+                break;
             case undefined:
                 break;
             default:
@@ -1235,44 +1451,226 @@ const PropertiesDisplay = React.memo((props: {
         propertiesChanged();
     }, [propertiesChanged]);
 
+    const keyboardApplySinglePropertyToSelection = useCallback((graph: Graph, p: PropertyData, c: PropertyDataFieldName|undefined) => {
+        if(!graph) return;
+        const value = propertyGet(p, c);
+
+        const vertexSetter = VertexSetterByPropertyDataFieldName(c);
+        if(!vertexSetter) return;
+
+        for(const vId of graph.activeVertices) {
+            const vertex = graph.vertexGet(vId);
+            if(!vertex) continue;
+            vertex.style ??= VertexStyleDefault();
+            vertexSetter(vertex, value);
+        }
+
+        props.updateGraph();
+    }, [props.updateGraph]);
+    const keyboardApplySinglePropertyToSelectionEdges = useCallback((graph: Graph, p: PropertyData, c: PropertyDataFieldName|undefined) => {
+        if(!graph) return;
+        const value = propertyGet(p, c);
+
+        const edgeSetter = EdgeSetterByPropertyDataFieldName(c);
+        if(!edgeSetter) return;
+
+        for(const fromId of graph.activeVertices) {
+            const vertex = graph.vertexGet(fromId);
+            if(!vertex) continue;
+            for(const toId of vertex.neighbors) {
+                if(fromId >= toId) continue;
+                if(!graph.activeVertices.includes(toId)) continue;
+
+                if(!graph.edgeStyle.has(fromId)) graph.edgeStyle.set(fromId, new Map<number, LineStyle>());
+                const style = graph.edgeStyle.get(fromId)?.get(toId) ?? LineStyleDefault();
+                edgeSetter(style, value);
+                graph.edgeStyle.get(fromId)?.set(toId, style);
+            }
+        }
+
+        props.updateGraph();
+    }, [props.updateGraph]);
+
+    const keyboardFunctionPropertiesPickSingle = useCallback((graph: Graph, p: PropertyData, c: PropertyDataFieldName|undefined) => {
+        if (!graph || graph.activeVertices.length === 0) return;
+        const last = graph.activeVertices[graph.activeVertices.length - 1];
+        const vertex = graph.vertexGet(last);
+        if (!vertex) return;
+        const getter = VertexGetterByPropertyDataFieldName(c);
+        if(!getter) return;
+        propertySet(p, c, ''+getter(vertex));
+        props.propertiesChanged(graph, p);
+        updateSet(new Date());
+    }, [props.propertiesChanged]);
+    const keyboardFunctionPropertiesEdgePickSingle = useCallback((graph: Graph, p: PropertyData, c: PropertyDataFieldName|undefined) => {
+        if (!graph) return;
+
+        const getter = EdgeGetterByPropertyDataFieldName(c);
+        if(!getter) return;
+
+        // pick the first we find
+        for (const fromId of graph.activeVertices) {
+            for (const toId of graph.activeVertices) {
+                if (fromId >= toId) continue;
+                if (!graph.vertexGet(fromId)?.neighbors.has(toId)) continue;
+
+                const lineStyle = graph.edgeStyle.get(fromId)?.get(toId) ?? LineStyleDefault();
+                propertySet(p, c, ''+getter(lineStyle));
+
+                props.propertiesChanged(graph, p);
+                updateSet(new Date());
+                return;
+            }
+        }
+    }, [props.propertiesChanged]);
+
+    // keyboard functions depending on properties
+    useEffect(() => {
+        const onKey = (e: KeyboardEvent) => {
+            if (!props.graph || !props.graph.active) return;
+            // console.log(e.key, e.ctrlKey, e.shiftKey)
+
+            // "q": properties
+            if (e.key === "q" || e.key === "Q") {
+                // only do ctrl here
+                if(!e.ctrlKey) return;
+
+                // affect vertices
+                if(!e.altKey) {
+                    // apply properties
+                    if(e.shiftKey) {
+                        keyboardApplySinglePropertyToSelection(props.graph, props.properties, colorOpen ?? numberOpen);
+                    }
+                    else {
+                        keyboardFunctionPropertiesPickSingle(props.graph, props.properties, colorOpen ?? numberOpen);
+                    }
+                }
+                // affect edges
+                else {
+                    // apply properties
+                    if(e.shiftKey) {
+                        keyboardApplySinglePropertyToSelectionEdges(props.graph, props.properties, colorOpen ?? numberOpen);
+                    }
+                    else {
+                        keyboardFunctionPropertiesEdgePickSingle(props.graph, props.properties, colorOpen ?? numberOpen);
+                    }
+                }
+                e.preventDefault();
+            }
+            // change numerical values
+            else if(e.key === '-') {
+                if(e.ctrlKey || e.shiftKey) return;
+                propertySet(props.properties, numberOpen, Math.min(50, (+propertyGet(props.properties, numberOpen)) - 1) + '');
+                updateSet(new Date());
+                e.preventDefault();
+            }
+            else if(e.key === '+') {
+                if(e.ctrlKey || e.shiftKey) return;
+                propertySet(props.properties, numberOpen, Math.min(50, (+propertyGet(props.properties, numberOpen)) + 1) + '');
+                updateSet(new Date());
+                e.preventDefault();
+            }
+        };
+        window.addEventListener("keydown", onKey);
+        return () => window.removeEventListener("keydown", onKey);
+    }, [props.graph, props.properties, colorOpen, numberOpen,
+        keyboardApplySinglePropertyToSelection]);
+
+    const colorValue = propertyGet(props.properties, colorOpen);
+    const numberValue = propertyGet(props.properties, numberOpen);
+
     return <>
         <div className="relative">
             <button className="swatch text-outline font-bold mr-2"
-                 style={{color: props.properties.vertexStyle.bgColor}}
-                 onClick={() => colorOpenSetWithWait('bgColor')}
+                    style={{
+                        color: props.properties.vertexStyle.bgColor,
+                        backgroundColor: props.properties.vertexStyle.bgColor,
+                    }}
+                    onClick={() => colorOpenSetWithWait(colorOpen, 'bgColor')}
             >
                 BG
             </button>
             <button className="swatch font-bold mr-2"
-                 style={{color: props.properties.vertexStyle.lineStyle.color}}
-                 onClick={() => colorOpenSetWithWait('lineColor')}
+                    style={{color: props.properties.vertexStyle.lineStyle.color}}
+                    onClick={() => colorOpenSetWithWait(colorOpen, 'lineColor')}
             >
                 Li
             </button>
-            <button className="swatch font-bold mr-2"
-                 style={{color: props.properties.vertexStyle.textColor}}
-                 onClick={() => colorOpenSetWithWait('textColor')}
+            <button className="swatch font-bold"
+                    style={{color: props.properties.vertexStyle.textColor}}
+                    onClick={() => colorOpenSetWithWait(colorOpen, 'textColor')}
             >
                 T
             </button>
 
+            <span className="mx-2">|</span>
+
+            <button className="swatch px-1 mr-2" style={{width: 'unset'}}
+                    onClick={() => numberOpenSetWithWait(numberOpen, 'lineWidth')}
+            >
+                w:{props.properties.vertexStyle.lineStyle.weight}
+            </button>
+            <button className="swatch px-1 mr-2" style={{width: 'unset'}}
+                    onClick={() => numberOpenSetWithWait(numberOpen, 'radius')}
+            >
+                r:{props.properties.vertexStyle.radius}
+            </button>
+
             {/* color picker */}
-            <div ref={popover} className="popover bg-white" style={{display: colorOpen ? 'block' : 'none'}}>
-                <h4 className="text-center p-1">
-                    {titleGet(colorOpen)}
-                </h4>
-                {colorOpen && <>
-                    <HexColorPicker color={colorGet(props.properties, colorOpen)} onChange={v => {
-                        colorSet(props.properties, colorOpen, v);
+            <div ref={popover} className="popover bg-white"
+                 style={{display: colorOpen || numberOpen ? 'block' : 'none'}}>
+                {/* color editor */ colorOpen && <>
+                    <h4 className="text-center p-1">
+                        {titleGet(colorOpen)}
+                    </h4>
+                    <HexColorPicker color={colorValue + ''} onChange={v => {
+                        propertySet(props.properties, colorOpen, v);
                         updateSet(new Date());
                     }}/>
                     <div className="text-center">
-                        <input className='my-2 text-center' type='text' value={colorGet(props.properties, colorOpen)} onChange={v => {
-                            colorSet(props.properties, colorOpen, v.target.value);
-                            updateSet(new Date());
-                        }} />
+                        <input className='my-2 text-center' type='text' value={colorValue}
+                               onChange={v => {
+                                   propertySet(props.properties, colorOpen, v.target.value);
+                                   updateSet(new Date());
+                               }}/>
                     </div>
                 </>}
+                {/* number editor */ numberOpen && <>
+                    <h4 className="text-center p-1">
+                        {titleGet(numberOpen)}
+                    </h4>
+                    <div className="text-center px-3">
+                        <kbd onClick={() => {
+                            propertySet(props.properties, numberOpen, ((+numberValue) - 1) + '');
+                            updateSet(new Date());
+                        }}>-</kbd>
+                        <input className='my-2 text-center' type='number' min={0} max={50}
+                               value={+numberValue} onChange={v => {
+                            propertySet(props.properties, numberOpen, v.target.value);
+                            updateSet(new Date());
+                        }}/>
+                        <kbd onClick={() => {
+                            propertySet(props.properties, numberOpen, Math.min(50, (+numberValue) + 1) + '');
+                            updateSet(new Date());
+                        }}>+</kbd>
+                    </div>
+                </>}
+
+                <div className="text-center mb-2">
+                    <button className="tooltip"
+                            onClick={() => keyboardApplySinglePropertyToSelection(props.graph, props.properties, colorOpen ?? numberOpen)}>
+                        <kbd>Ctrl+Q</kbd>
+                        <div className="tooltiptext" style={{width: "300px"}}>
+                            <kbd>Ctrl+Q</kbd> Pick only this property value in the selection.
+                            <br/><br/>
+                            Add <kbd>Shift</kbd> to apply to the selection instead.
+                            <br/><br/>
+                            Add <kbd>Alt</kbd> to pick from edges.
+                            <br/><br/>
+                            Note: only works while the property window is open.
+                        </div>
+                    </button>
+                </div>
             </div>
         </div>
     </>;
@@ -1325,7 +1723,7 @@ const GraphRender = React.memo((props: {
                         x1={v.position.x} y1={v.position.y}
                         x2={n.position.x} y2={n.position.y}
                         stroke={active ? 'orange' : '#ffffff02'}
-                        strokeWidth={(active ? 0 : 16) + lineStyle.weight}
+                        strokeWidth={(active ? 0 : 16) + (!isNaN(lineStyle.weight) ? lineStyle.weight : 1)}
                         strokeDasharray={lineStyle.type === "dashed" ? "6,4" : lineStyle.type === "dotted" ? "2,4" : undefined}
                         onClick={e => props.edgeClick(e, v.id, nId)}
                     />
@@ -1375,6 +1773,8 @@ const GraphRender = React.memo((props: {
             const style = v.style ?? VertexStyleDefault();
             const label = vertexLabel(v, style);
 
+            const cliqueAmount = graph.cliqueVertexCounts.get(v.id);
+
             nodes.push(
                 <g key={v.id}
                    data-vertex={v.id}
@@ -1385,7 +1785,7 @@ const GraphRender = React.memo((props: {
                         r={style.radius}
                         fill={style.bgColor}
                         stroke={style.lineStyle.color}
-                        strokeWidth={(active ? 1.5 : 0) + style.lineStyle.weight}
+                        strokeWidth={(active ? 1.5 : 0) + (!isNaN(style.lineStyle.weight) ? style.lineStyle.weight : 1)}
                         strokeDasharray={v.disabled || style.lineStyle.type === "dashed" ? "6,8" : style.lineStyle.type === "dotted" ? "2,4" : undefined}
                     />
                     {label && <text
@@ -1398,6 +1798,24 @@ const GraphRender = React.memo((props: {
                     >
                         {label}
                     </text>}
+                    {cliqueAmount && <>
+                        <circle
+                            cx={v.position.x} cy={v.position.y-style.radius-1}
+                            r={8}
+                            fill={style.bgColor}
+                        />
+                        <text
+                            className="select-none"
+                            x={v.position.x} y={v.position.y}
+                            dy={-style.radius-1}
+                            fill={style.textColor}
+                            fontSize={14}
+                            textAnchor="middle"
+                            dominantBaseline="middle"
+                        >
+                            {cliqueAmount}
+                        </text>
+                    </>}
                 </g>
             );
         }

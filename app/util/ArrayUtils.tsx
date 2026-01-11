@@ -8,3 +8,11 @@ export function ArrayEquals<T>(array: T[], array2: T[]): boolean {
 
     return true;
 }
+
+/** checks whether `arrayHasElements` contains all elements of `elements` */
+export function ArrayContainsAll<T>(arrayHasElements: T[], elements: T[]): boolean {
+    for(const v of elements) {
+        if(!arrayHasElements.includes(v)) return false;
+    }
+    return true;
+}

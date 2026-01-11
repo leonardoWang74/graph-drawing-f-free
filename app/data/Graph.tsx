@@ -54,20 +54,206 @@ export default class Graph {
     public edgesForbidden: Map<number, Set<number>> = new Map<number, Set<number>>();
 
     public activeVertices: number[] = [];
-    public forbiddenInduced: Graph[] = [];
+    public forbiddenInduced: number[][] = [];
+
+    public cliquesMaximal: Set<number>[] = [];
+    public cliqueVertexCounts: Map<number, number> = new Map<number, number>();
 
     //////////////////////////////////////////
     // region complex functions
-    // list induced subgraphs, add a clique
+    // list induced subgraphs, get degeneracy, find maximal cliques
     //////////////////////////////////////////
 
-    /** find induced subgraphs of `subgraph` (must be a connected graph). The returned subgraphs retain the vertex IDs but not the object identity */
-    public inducedSubgraphs(subgraph: Graph): Graph[] {
+    /** find maximal cliques in the graph */
+    public getMaximalCliques(): Set<number>[] {
+        // could first calculate the degeneracy and choose which algorithm to run
+        // e.g. if degeneracy is high, use the matrix multiplication algorithm
+        return this.BronKerboschDegeneracyByEppsteinLoefflerStrash();
+    }
+
+    /** Bron-Kerbosch based on degeneracy by Eppstein, Loeffller and Strash.
+     * [Eppstein et al. 2010 - Listing All Maximal Cliques in Sparse Graphs in Near-optimal Time, Figure 4: BronKerboschDegeneracy]
+     */
+    public BronKerboschDegeneracyByEppsteinLoefflerStrash(): Set<number>[] {
+        const list: Set<number>[] = [];
+
+        const degeneracyInfo = this.getDegeneracyOrdering();
+
+        // for each vertex vi in a degeneracy ordering $v_0, v_1, v_2, \dots$ of $(V,E)$ do
+        for(let i = 0; i < degeneracyInfo.ordering.length; ++i) {
+            const vId = degeneracyInfo.ordering[i];
+            const v = this.vertexGet(vId);
+            if(!v) continue;
+
+            // const previous = new Set<number>(degeneracyInfo.ordering.slice(0, i));
+            const next = new Set<number>(degeneracyInfo.ordering.slice(i+1, degeneracyInfo.ordering.length));
+
+            // $ P \leftarrow N(v_i) \cap \{v_{i+1}, \dots, v_{n-1}\}$
+            // P = Neighborhood intersected with neighbors later in the ordering
+            const P = v.neighbors.intersection(next);
+
+            // $ X \leftarrow N(v_i) \cap \{v_0, \dots, v_{i-1}\}$
+            // X = Neighborhood intersected with neighbors earlier in the ordering
+
+            // $P \cup X = N(v_i)$ holds therefore also $X = N(v_i) \setminus P$
+            // so we don't need to calculate the slice of the previous vertices in the ordering
+            const X = v.neighbors.difference(P);
+
+            this.BronKerboschPivot(list, P, new Set<number>([vId]), X);
+        }
+
+        return list;
+    }
+
+    /** Bron-Kerbosch with Pivot.
+     * [Eppstein et al. 2010 - Listing All Maximal Cliques in Sparse Graphs in Near-optimal Time, Figure 2: BronKerboschPivot]
+     */
+    public BronKerboschPivot(result: Set<number>[], P: Set<number>, R: Set<number>, X: Set<number>) {
+        const pivotCandidates = P.union(X);
+
+        // if $P \cup X = \emptyset$
+        if(pivotCandidates.size === 0) {
+            // report R as a maximal clique
+            result.push(R);
+            return;
+        }
+
+        // choose a pivot $u \in P \cup X$. Tomita et al. 2006: choose $u$ to maximize $|P \cap N(u)|$ with $N(u)$ being the neighborhood of $u$
+        // [Tomita et al. 2006 - The worst-case time complexity for generating all maximal cliques and computational experiments]
+        let pivot: Vertex|undefined = undefined;
+        let pivotValue = -1;
+        for(const vId of pivotCandidates) {
+            const v = this.vertexGet(vId);
+            if(!v) continue;
+            const value = P.intersection(v.neighbors).size;
+            if(value > pivotValue) {
+                pivot = v;
+                pivotValue = value;
+            }
+        }
+        if(!pivot) return;
+
+        // for each vertex $v \in P \setminus N(u)$ do
+        const loopSet= P.difference(pivot.neighbors);
+        for(const vId of loopSet) {
+            const v = this.vertexGet(vId);
+            if(!v) return;
+
+            // BronKerboschPivot($P \cap N(v)$, $R \cup \{v\}$, $X \cap N(v)$)
+            this.BronKerboschPivot(result,
+                P.intersection(v.neighbors),
+                R.union(new Set<number>([vId])),
+                X.intersection(v.neighbors)
+            );
+
+            // P \leftarrow P \setminus \{v\}
+            P.delete(vId);
+            // X \leftarrow X \cup \{v\}
+            X.add(vId);
+        }
+    }
+
+    /** calculate a degeneracy + degeneracy ordering of the graph.
+     * [Eppstein et al. 2010 - Listing All Maximal Cliques in Sparse Graphs in Near-optimal Time, Section 2.1 before Lemma 1]
+     */
+    public getDegeneracyOrdering(): { degeneracy: number, ordering: number[] } {
+        const n = this.n();
+        let smallestDegree = this.vertices.size;
+        /** map of vertexId -> degree. Need to save degree separately since we change it */
+        const verticesMap: Map<number, number> = new Map<number, number>();
+        /** map of degree -> list of vertices */
+        const degreesMap: Map<number, Vertex[]> = new Map<number, Vertex[]>();
+
+        // build map of degree -> list of vertices with that degree
+        for(const v of this.vertices.values()) {
+            const degree = v.degree();
+            smallestDegree = Math.min(smallestDegree, degree);
+
+            if(!degreesMap.has(degree)) degreesMap.set(degree, []);
+            degreesMap.get(degree)?.push(v);
+
+            verticesMap.set(v.id, degree);
+        }
+
+        const degeneracyOrdering: number[] = [];
+        let degeneracy = 0;
+        while(verticesMap.size > 0) {
+            // get a vertex with the smallest degree
+            const listSmallest = degreesMap.get(smallestDegree);
+            if(!listSmallest) break;
+            const v = listSmallest.shift();
+            if(!v) break;
+
+            // remove empty list from map, update smallest Degree
+            if(listSmallest.length === 0) {
+                degreesMap.delete(smallestDegree);
+
+                if(verticesMap.size > 0) {
+                    while(smallestDegree < n) {
+                        ++smallestDegree;
+                        if(verticesMap.has(smallestDegree)) break;
+                    }
+                }
+            }
+
+            // remove from the graph
+            verticesMap.delete(v.id);
+
+            // remove neighbors
+            let degeneracyHere = 0;
+            for(const neighbor of v.neighbors) {
+                const neighborVertex = this.vertexGet(neighbor);
+                if(!neighborVertex) continue;
+
+                const degreePrevious = verticesMap.get(neighbor);
+                if(degreePrevious===undefined) continue;
+                const degreeNew = degreePrevious - 1;
+
+                // count how many were removed = degeneracy
+                ++degeneracyHere;
+
+                // decrease degree of neighbor
+                verticesMap.set(neighbor, degreeNew);
+
+                // remove neighbor from old list
+                const previousList = degreesMap.get(degreePrevious);
+                if(previousList) {
+                    for(let i=0; i<previousList.length; ++i) {
+                        if(previousList[i].id !== neighbor) continue;
+                        previousList.splice(i, 1);
+                        break;
+                    }
+                    if(previousList.length === 0) {
+                        degreesMap.delete(degreePrevious);
+                    }
+                }
+
+                // put neighbor into new list
+                if(!degreesMap.has(degreeNew)) degreesMap.set(degreeNew, []);
+                degreesMap.get(degreeNew)?.push(neighborVertex);
+
+                // maybe change smallest degree
+                if(degreePrevious <= smallestDegree) {
+                    smallestDegree = degreePrevious - 1;
+                }
+            }
+
+            // add to ordering
+            degeneracyOrdering.push(v.id);
+
+            // increase degeneracy
+            degeneracy = Math.max(degeneracy, degeneracyHere);
+        }
+        return {degeneracy: degeneracy, ordering: degeneracyOrdering};
+    }
+
+    /** find induced subgraphs of `subgraph` (must be a connected graph). Returns a list of `list of subgraph vertices` */
+    public inducedSubgraphs(subgraph: Graph): number[][] {
         // simple algorithm idea: only check subgraphs where the degree of the vertices fit, starting with the largest (in the given subgraph)
-        const inducedList: Graph[] = [];
+        const inducedList: number[][] = [];
 
         // get degrees of the subgraph (including duplicates): descending
-        const subgraphDegreesDesc = subgraph.getDegreesDescending(true);
+        const subgraphDegreesDesc = subgraph.getDegreesDescending();
 
         // empty subgraph: return nothing
         if(subgraphDegreesDesc.length === 0) return inducedList;
@@ -78,7 +264,7 @@ export default class Graph {
                 const v = vertex.clone();
                 v.neighbors.clear();
                 graph.vertexAdd(v);
-                inducedList.push(graph);
+                inducedList.push([v.id]);
             }
             return inducedList;
         }
@@ -99,7 +285,7 @@ export default class Graph {
         subgraphDegreeAscByCount.sort((a, b) => subgraphVerticesByDegree.get(a)?.size - subgraphVerticesByDegree.get(b)?.size);
 
         // build a map of the degrees in the current graph
-        const graphDegreesDesc: number[] = this.getDegreesDescending(false); // (does not contain duplicates)
+        const graphDegreesDesc: number[] = this.getDegreesDescendingNoDuplicates(); // (does not contain duplicates)
         const verticesByDegree: Map<number, Set<Vertex>> = new Map<number, Set<Vertex>>();
         for(const vertex of this.vertices.values()) {
             const degree = vertex.degree();
@@ -117,8 +303,11 @@ export default class Graph {
         return inducedList;
     }
 
+    public static timeGettingSubgraphSearch: number = 0;
+    public static timeGettingSubgraphCheck: number = 0;
+
     private subgraphSearch(
-        inducedList: Graph[],
+        inducedList: number[][],
         subgraph: Graph,
             subgraphDegreesDesc: number[],
             subgraphVerticesByDegree: Map<number, Set<Vertex>>,
@@ -131,25 +320,29 @@ export default class Graph {
         // found enough vertices - add to preliminary list of subgraph
         if(foundIDs.length >= subgraphDegreesDesc.length) {
             // create subgraph
-            const subgraphFound = this.getSubgraph(foundIDs);
+            const now = new Date();
+            const subgraphFound = this.getSubgraphAlgorithm(foundIDs);
+            Graph.timeGettingSubgraphCheck += new Date()-now;
 
             // degrees don't match - discard
-            if(!ArrayEquals(subgraphDegreesDesc, subgraphFound.getDegreesDescending(true))) return;
+            if(!ArrayEquals(subgraphDegreesDesc, subgraphFound.getDegreesDescending())) return;
             /*console.log('subgraphFound', subgraphFound)
             console.log('subgraphDegreesDesc', subgraphDegreesDesc)
             console.log('subgraphFound.getDegreesDescending()', subgraphFound.getDegreesDescending(true))*/
-
-            // check if there is a bijective function: found -> subgraph
-            const bijection : Map<number, number> = new Map<number, number>();
-            const subgraphVerticesUsed : Set<number> = new Set<number>();
 
             // get vertices by degree of found subgraph
             const verticesByDegreeFound: Map<number, Set<Vertex>> = new Map<number, Set<Vertex>>();
             for(const vertex of subgraphFound.vertices.values()) {
                 const degree = vertex.degree();
-                if(!verticesByDegreeFound.has(degree)) verticesByDegreeFound.set(degree, new Set<Vertex>());
+                if(!verticesByDegreeFound.has(degree)) {
+                    verticesByDegreeFound.set(degree, new Set<Vertex>());
+                }
                 verticesByDegreeFound.get(degree)?.add(vertex);
             }
+
+            // check if there is a bijective function: found -> subgraph
+            const bijection : Map<number, number> = new Map<number, number>();
+            const subgraphVerticesUsed : Set<number> = new Set<number>();
 
             // degree <=1 is a clear bijective map: assign any
             for(let degree=0; degree<=1; ++degree) {
@@ -209,11 +402,17 @@ export default class Graph {
                 // check edges fit using the bijection
                 if (subgraphFound.subgraphCheckEdgesWithBijection(subgraph, bijection)) {
                     // found a real induced subgraph: add to list
-                    inducedList.push(subgraphFound);
+                    inducedList.push(foundIDs);
                 }
             }
             // non-unique: try mappings
             else {
+                // try if partial mapping is possible
+                if (subgraphFound.subgraphCheckEdgesWithBijection(subgraph, bijection) === false) {
+                    return;
+                }
+
+                // try all mappings
                 for (const mapping of BijectionsCombination(generators)) {
                     const fullBijection = new Map(bijection);
                     for (const [k, v] of mapping) {
@@ -225,7 +424,7 @@ export default class Graph {
                     // check edges fit using the bijection
                     if (subgraphFound.subgraphCheckEdgesWithBijection(subgraph, fullBijection)) {
                         // found a real induced subgraph: add to list
-                        inducedList.push(subgraphFound);
+                        inducedList.push(foundIDs);
                         break;
                     }
                 }
@@ -270,7 +469,10 @@ export default class Graph {
 
             // find first vertex that could have more neighbors (not the first, since that is always fulfilled)
             const verticesByDegreeDescending: Vertex[] = [];
-            const subgraphFound = this.getSubgraph(foundIDs);
+
+            const now = new Date();
+            const subgraphFound = this.getSubgraphAlgorithm(foundIDs);
+            Graph.timeGettingSubgraphSearch += new Date() - now;
 
             // get degrees in the currently found subgraph
             for(const vertex of subgraphFound.vertices.values()) {
@@ -319,7 +521,14 @@ export default class Graph {
         }
     }
 
+    public static timeCheckingEdges: number = 0;
     public subgraphCheckEdgesWithBijection(subgraph: Graph, bijection: Map<number, number>): boolean|undefined {
+        const now = new Date();
+        const value = this.subgraphCheckEdgesWithBijectionNotTimed(subgraph, bijection);
+        Graph.timeCheckingEdges += new Date() - now;
+        return value;
+    }
+    public subgraphCheckEdgesWithBijectionNotTimed(subgraph: Graph, bijection: Map<number, number>): boolean|undefined {
         // this = found subgraph (large IDs). subgraph = looking for this subgraph (small IDs)
         let partial = false;
 
@@ -352,35 +561,6 @@ export default class Graph {
 
         if(partial) return undefined;
         return true;
-    }
-
-    /** add a clique to the graph. The `count` vertices are placed in a circle around `position` with `radius` */
-    public addClique(position: Vector2, count: number, radius: number = 50): Vertex[] {
-        const cliqueVertices: Vertex[] = [];
-        if(count <= 0) return cliqueVertices;
-
-        // add vertices in a circle
-        let angle = 0;
-        const angleDelta = 2 * Math.PI / count;
-        for(let i=0; i<count; ++i) {
-            const vertex = this.vertexAdd(Vertex.Vertex(new Vector2(
-                position + radius * Math.cos(angleDelta),
-                position + radius * Math.sin(angleDelta)
-            )));
-            cliqueVertices.push(vertex);
-
-            angle += angleDelta;
-        }
-
-        // add edges between all clique vertices
-        for(const v1 of cliqueVertices) {
-            for (const v2 of cliqueVertices) {
-                if(v1.equals(v2)) continue;
-                this.edgeAdd(v1, v2);
-            }
-        }
-
-        return cliqueVertices;
     }
 
     // endregion complex functions
@@ -441,7 +621,7 @@ export default class Graph {
                 }
             }
 
-            components.push(this.getSubgraph(ids));
+            components.push(this.getSubgraphAlgorithm(ids));
         }
 
         return components;
@@ -455,6 +635,19 @@ export default class Graph {
             nonDisabled.push(vertex.id);
         }
         return this.getSubgraph(nonDisabled);
+    }
+
+    /** get a subgraph (reduced set of vertices, with the same edges). Creates new vertices with the same IDs (doesn't use the same vertex objects) */
+    public getSubgraphAlgorithm(vertices: number[]): Graph {
+        const graph = new Graph();
+
+        for(const vertex of this.vertices.values()) {
+            if(!vertices.includes(vertex.id)) continue;
+            const v = vertex.clone();
+            v.subgraphFilter(vertices);
+            graph.vertexAdd(v);
+        }
+        return graph;
     }
 
     /** get a subgraph (reduced set of vertices, with the same edges). Creates new vertices with the same IDs (doesn't use the same vertex objects) */
@@ -476,7 +669,6 @@ export default class Graph {
                 graph.edgeStyle.get(v.id)?.set(to, LineStyleClone(style));
             }
         }
-
         return graph;
     }
 
@@ -525,13 +717,24 @@ export default class Graph {
     }
 
     /** get the degrees of all vertices sorted ascending (choose to include `duplicates` or not) */
-    public getDegreesDescending(duplicates: boolean = false): number[] {
+    public getDegreesDescending(): number[] {
         const degrees: number[] = [];
         for(const vertex of this.vertices.values()) {
             const degree = vertex.degree();
 
-            // skip if: want no duplicates && already in list
-            if(!duplicates && degrees.includes(degree)) continue;
+            degrees.push(degree);
+        }
+        degrees.sort(SortNumberDescending);
+        return degrees;
+    }
+
+    public getDegreesDescendingNoDuplicates(): number[] {
+        const degrees: number[] = [];
+        for(const vertex of this.vertices.values()) {
+            const degree = vertex.degree();
+
+            // skip: already in list
+            if(degrees.includes(degree)) continue;
 
             degrees.push(degree);
         }

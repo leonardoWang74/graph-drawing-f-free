@@ -96,6 +96,7 @@ export class Vertex {
     public static Vertex(position: Vector2): Vertex {
         const vertex = new Vertex();
         vertex.position = position;
+        vertex.style = VertexStyleDefault();
         return vertex;
     }
 
