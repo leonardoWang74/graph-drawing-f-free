@@ -66,9 +66,17 @@ export default class Graph {
 
     /** find maximal cliques in the graph */
     public getMaximalCliques(): Set<number>[] {
-        // could first calculate the degeneracy and choose which algorithm to run
-        // e.g. if degeneracy is high, use the matrix multiplication algorithm
-        return this.BronKerboschDegeneracyByEppsteinLoefflerStrash();
+        const list: Set<number>[] = [];
+
+        // find maximal cliques for each component
+        const components = this.getComponents();
+        for(const c of components) {
+            // could first calculate the degeneracy and choose which algorithm to run
+            // e.g. if degeneracy is high, use the matrix multiplication algorithm
+            list.push(...c.BronKerboschDegeneracyByEppsteinLoefflerStrash());
+        }
+
+        return list;
     }
 
     /** Bron-Kerbosch based on degeneracy by Eppstein, Loeffller and Strash.
