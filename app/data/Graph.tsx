@@ -79,7 +79,7 @@ export default class Graph {
         return list;
     }
 
-    /** Bron-Kerbosch based on degeneracy by Eppstein, Loeffller and Strash.
+    /** get maximal cliques using Bron-Kerbosch based on degeneracy by Eppstein, Loeffller and Strash.
      * [Eppstein et al. 2010 - Listing All Maximal Cliques in Sparse Graphs in Near-optimal Time, Figure 4: BronKerboschDegeneracy]
      */
     public BronKerboschDegeneracyByEppsteinLoefflerStrash(): Set<number>[] {
@@ -325,8 +325,12 @@ export default class Graph {
         foundIDs: number[],
         forbidden: Set<number> = new Set<number>() // cannot add these vertices
     ): void {
+        if(foundIDs.length > subgraphDegreesDesc.length) {
+            return;
+        }
+
         // found enough vertices - add to preliminary list of subgraph
-        if(foundIDs.length >= subgraphDegreesDesc.length) {
+        if(foundIDs.length === subgraphDegreesDesc.length) {
             // create subgraph
             const now = new Date();
             const subgraphFound = this.getSubgraphAlgorithm(foundIDs);
@@ -443,6 +447,7 @@ export default class Graph {
         // base case: add high degree vertex and neighbors to found IDs
         if(foundIDs.length === 0) {
             const degreeWant = subgraphDegreesDesc[0];
+            const forbiddenStart: Set<number> = new Set<number>();
 
             // branch on all possible vertices (based on degree)
             for(const degreeIs of graphDegreesDesc) {
@@ -457,16 +462,17 @@ export default class Graph {
                     // get subsets of neighbors
                     for(const neighbors of Subsets(vertex.neighbors, degreeWant)) {
                         const foundSubgraph: number[] = [vertex.id];
-                        const forbidden: Set<number> = new Set<number>();
-                        forbidden.add(vertex.id);
+
+                        forbiddenStart.add(vertex.id); // do not try to add this vertex in other branches
+                        const forbiddenNew = new Set<number>(forbiddenStart);
 
                         for(const id of neighbors) {
                             foundSubgraph.push(id);
-                            forbidden.add(id);
+                            forbiddenNew.add(id);
                         }
 
                         this.subgraphSearch(inducedList, subgraph, subgraphDegreesDesc, subgraphVerticesByDegree, subgraphDegreeAscByCount,
-                            graphDegreesDesc, verticesByDegree, foundSubgraph, forbidden);
+                            graphDegreesDesc, verticesByDegree, foundSubgraph, forbiddenNew);
                     }
                 }
             }
