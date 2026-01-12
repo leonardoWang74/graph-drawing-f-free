@@ -701,6 +701,7 @@ export function GraphEditor({
             const vertex = graph.vertexGet(vId);
             if (!vertex) continue;
             vertex.style = VertexStyleClone(properties.vertexStyle);
+            ++vertex.version;
         }
         updateSet(new Date());
     }, []);
@@ -735,6 +736,8 @@ export function GraphEditor({
                 if (!graph.edgeStyle.has(fromId)) graph.edgeStyle.set(fromId, new Map<number, LineStyle>());
                 graph.edgeStyle.get(fromId)?.set(toId, LineStyleClone(properties.vertexStyle.lineStyle));
             }
+
+            ++from.version;
         }
         updateSet(new Date());
     }, []);
@@ -1505,6 +1508,7 @@ const PropertiesDisplay = React.memo((props: {
             if(!vertex) continue;
             vertex.style ??= VertexStyleDefault();
             vertexSetter(vertex, value);
+            ++vertex.version;
         }
 
         props.updateGraph();
@@ -1528,6 +1532,7 @@ const PropertiesDisplay = React.memo((props: {
                 edgeSetter(style, value);
                 graph.edgeStyle.get(fromId)?.set(toId, style);
             }
+            ++vertex.version;
         }
 
         props.updateGraph();
@@ -1729,9 +1734,6 @@ const EdgeRender = React.memo((props: {
     const v = props.from;
     const n = props.to;
 
-    const key = v.id + "-" + n.id;
-
-
     /*const active = activeEdge && (
         (v.id === activeEdge.x && nId === activeEdge.y)
         || (v.id === activeEdge.y && nId === activeEdge.x)
@@ -1749,7 +1751,6 @@ const EdgeRender = React.memo((props: {
     const color = forbidden ? '#ff0000' : lineStyle.color;
     return <>
         <line
-            key={key + "-bg"}
             data-ui="true"
             x1={v.position.x} y1={v.position.y}
             x2={n?.position.x} y2={n?.position.y}
@@ -1758,7 +1759,6 @@ const EdgeRender = React.memo((props: {
             strokeDasharray={lineStyle.type === "dashed" ? "6,4" : lineStyle.type === "dotted" ? "2,4" : undefined}
         />
         <line
-            key={key}
             data-edge-from={v.id} data-edge-to={n.id}
             x1={v.position.x} y1={v.position.y}
             x2={n?.position.x} y2={n?.position.y}
@@ -1804,8 +1804,7 @@ const VertexRender = React.memo((props: {
     const cliqueAmount = props.graph.cliqueVertexCounts.get(v.id);
 
     return <>
-        <g key={v.id}
-           data-vertex={v.id}
+        <g data-vertex={v.id}
            onMouseDown={e => props.vertexClick(e, v, active)}
         >
             <circle
@@ -1850,15 +1849,14 @@ const VertexRender = React.memo((props: {
 
 const GraphRender = React.memo((props: {
     graph: Graph,
-    activeEdge?: Vector2,
     activeVertices: number[],
     update?: Date,
 
     vertexClick: (e: React.MouseEvent, vertex: Vertex, active: boolean) => void,
 }) => {
     const renderEdges = useCallback((graph: Graph) => {
-        if (!graph) return;
         const lines: JSX.Element[] = [];
+        if (!graph) return lines;
 
         for (const v of graph.vertices.values()) {
             for (const nId of v.neighbors) {
@@ -1870,7 +1868,7 @@ const GraphRender = React.memo((props: {
             }
         }
         return lines;
-    }, [props.activeEdge, props.activeVertices]);
+    }, [props.activeVertices]);
 
     return <>
         {renderEdges(props.graph)}
