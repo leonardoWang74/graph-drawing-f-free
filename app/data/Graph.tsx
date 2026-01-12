@@ -55,9 +55,11 @@ export default class Graph {
 
     public activeVertices: number[] = [];
     public forbiddenInduced: number[][] = [];
+    public forbiddenVersion: number = 0;
 
     public cliquesMaximal: Set<number>[] = [];
     public cliqueVertexCounts: Map<number, number> = new Map<number, number>();
+    public cliquesVersion: number = 0;
 
     //////////////////////////////////////////
     // region complex functions
@@ -86,6 +88,7 @@ export default class Graph {
         const list: Set<number>[] = [];
 
         const degeneracyInfo = this.getDegeneracyOrdering();
+        console.log('degeneracy of '+this.vertices.values().map(v => v.id).toArray().join(',')+ ": ", degeneracyInfo.degeneracy)
 
         // for each vertex vi in a degeneracy ordering $v_0, v_1, v_2, \dots$ of $(V,E)$ do
         for(let i = 0; i < degeneracyInfo.ordering.length; ++i) {
@@ -461,18 +464,18 @@ export default class Graph {
 
                     // get subsets of neighbors
                     for(const neighbors of Subsets(vertex.neighbors, degreeWant)) {
-                        const foundSubgraph: number[] = [vertex.id];
+                        const foundIDsNew: number[] = [vertex.id];
 
                         forbiddenStart.add(vertex.id); // do not try to add this vertex in other branches
                         const forbiddenNew = new Set<number>(forbiddenStart);
 
                         for(const id of neighbors) {
-                            foundSubgraph.push(id);
+                            foundIDsNew.push(id);
                             forbiddenNew.add(id);
                         }
 
                         this.subgraphSearch(inducedList, subgraph, subgraphDegreesDesc, subgraphVerticesByDegree, subgraphDegreeAscByCount,
-                            graphDegreesDesc, verticesByDegree, foundSubgraph, forbiddenNew);
+                            graphDegreesDesc, verticesByDegree, foundIDsNew, forbiddenNew);
                     }
                 }
             }
@@ -756,10 +759,20 @@ export default class Graph {
         return degrees;
     }
 
+    // endregion advanced functions
+
     //////////////////////////////////////////
     // region basic functions
     // vertex/edge: get/add/remove
     //////////////////////////////////////////
+
+    public activeVerticesIncrementVersion() {
+        for (const vId of this.activeVertices) {
+            const v = this.vertexGet(vId);
+            if (!v) continue;
+            ++v.version;
+        }
+    }
 
     /** returns the number of vertices (n) in the graph */
     public n(): number {

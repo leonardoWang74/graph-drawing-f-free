@@ -38,6 +38,9 @@ export class Vertex {
 
     public neighbors: Set<number> = new Set<number>();
 
+    /** version number. Only visually update the vertex if version changed */
+    public version: number = 0;
+
     public static SortByDegreeDescending(a: Vertex, b: Vertex): number {
         return b.degree() - a.degree();
     }

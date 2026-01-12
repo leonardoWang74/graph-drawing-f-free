@@ -152,6 +152,7 @@ export default function GraphWindow() {
             console.log('inducedForbidden:', inducedForbidden.length, ' in miliseconds: ', new Date()-timeStartLook);
         }
         graph.forbiddenInduced = inducedForbidden;
+        ++graph.forbiddenVersion;
         console.log('found inducedForbidden:', inducedForbidden.length, ' in miliseconds: ', new Date()-timeStartLook + "\n",
             `Graph.timeCheckingEdges: ${Graph.timeCheckingEdges} ms\n`,
             `Graph.timeGettingSubgraphSearch: ${Graph.timeGettingSubgraphSearch} ms\n`,
@@ -165,6 +166,7 @@ export default function GraphWindow() {
             for (const vId of subgraph) {
                 const v = graph.vertexGet(vId);
                 if(!v) continue;
+                ++v.version;
                 for (const v2 of v.neighbors) {
                     if(!subgraph.includes(v2)) continue;
 
@@ -271,7 +273,7 @@ interface ViewData {
 }
 
 interface VertexDragData {
-    mouseStartOffset: Vector2;
+    mouseStartOffset?: Vector2;
     vertex: number;
     ctrlKey: boolean;
 }
@@ -311,14 +313,18 @@ export function GraphEditor({
         activeVertices: number[],
         forbidden: number[][],
         forbiddenNot: number[][],
+        forbiddenVersion: number,
         cliques: Set<number>[],
         cliquesNot: Set<number>[],
+        cliquesVersion: number,
     }>({
         activeVertices: [],
         forbidden: [],
         forbiddenNot: [],
+        forbiddenVersion: 0,
         cliques: [],
         cliquesNot: [],
+        cliquesVersion: 0,
     });
 
     /** =========================
@@ -346,10 +352,7 @@ export function GraphEditor({
     // region keyboard
     const keyboardDeleteSelection = useCallback((graph: Graph) => {
         if (graph.activeVertices.length > 0) {
-            for (const vId of graph.activeVertices) {
-                const v = graph.vertexGet(vId);
-                if (v) graph.vertexRemove(v);
-            }
+            graph.activeVerticesIncrementVersion();
             graph.activeVertices = [];
             updateSet(new Date());
         }
@@ -412,11 +415,23 @@ export function GraphEditor({
     }, []);
 
     const keyboardFunctionEdgesToggle = useCallback((graph: Graph, from: Vertex, to: Vertex) => {
-        if (graph.edgeHas(from, to)) graph.edgeRemove(from, to);
-        else graph.edgeAdd(from, to);
+        if (graph.edgeHas(from, to)) {
+            graph.edgeRemove(from, to);
+            ++from.version;
+            ++to.version;
+        }
+        else {
+            graph.edgeAdd(from, to);
+            ++from.version;
+            ++to.version;
+        }
     }, []);
     const keyboardFunctionEdgesAdd = useCallback((graph: Graph, from: Vertex, to: Vertex) => {
-        if (!graph.edgeHas(from, to)) graph.edgeAdd(from, to);
+        if (!graph.edgeHas(from, to)) {
+            graph.edgeAdd(from, to);
+            ++from.version;
+            ++to.version;
+        }
     }, []);
 
     const keyboardEdges = useCallback((e?: KeyboardEvent, graph?: Graph) => {
@@ -483,6 +498,7 @@ export function GraphEditor({
             const vertex = graph.vertexGet(vId);
             if (!vertex) continue;
             vertex.disabled = !vertex.disabled;
+            ++vertex.version;
         }
         updateSet(new Date());
     }, []);
@@ -494,6 +510,7 @@ export function GraphEditor({
     const keyboardMaximalCliques = useCallback((graph: Graph) => {
         const now = new Date();
         graph.cliquesMaximal = graph.getSubgraphAlgorithm(graph.activeVertices).getMaximalCliques();
+        ++graph.cliquesVersion;
         const duration = new Date() - now;
 
         // remove number of cliques in selection
@@ -504,9 +521,12 @@ export function GraphEditor({
         // count number of cliques per vertex
         for(const subgraph of graph.cliquesMaximal) {
             for(const vId of subgraph) {
-                graph.cliqueVertexCounts.set(vId, (graph.cliqueVertexCounts.get(vId) ?? 0) + 1)
+                graph.cliqueVertexCounts.set(vId, (graph.cliqueVertexCounts.get(vId) ?? 0) + 1);
             }
         }
+
+        // update version: updated number of cliques
+        graph.activeVerticesIncrementVersion();
 
         console.log('found maximal cliques: ', graph.cliquesMaximal.length, ` in time ${duration} ms`)
         updateSet(new Date());
@@ -525,6 +545,7 @@ export function GraphEditor({
             }
             // clear selection
             else if (e.key === "Escape") {
+                graph.activeVerticesIncrementVersion();
                 graph.activeVertices = [];
             }
             // export / save
@@ -622,7 +643,9 @@ export function GraphEditor({
             else if (e.key === "v") {
                 if (e.ctrlKey) {
                     if (clipboard) {
+                        graph.activeVerticesIncrementVersion();
                         graph.activeVertices = graph.addSubgraph(clipboard.graph, clipboard.mouseWorld, screenToWorld(mouseLast.screen));
+                        graph.activeVerticesIncrementVersion();
 
                         updateSet(new Date());
                         e.preventDefault();
@@ -767,10 +790,11 @@ export function GraphEditor({
     const onMouseDownCanvas = useCallback((e: React.MouseEvent) => {
         // left click on canvas = box select / deselect
         if (e.button === 0) {
-            // no shift key: clear selection
             let activeVerticesStart = [...graph.activeVertices];
 
+            // no shift / ctrl key: clear selection
             if (!e.ctrlKey && !e.shiftKey) {
+                graph.activeVerticesIncrementVersion();
                 activeVerticesStart = [];
                 graph.activeVertices = [];
             }
@@ -845,7 +869,9 @@ export function GraphEditor({
             }
 
             if (!ArrayEquals(graph.activeVertices, active)) {
+                graph.activeVerticesIncrementVersion();
                 graph.activeVertices = active;
+                graph.activeVerticesIncrementVersion();
                 updateSet(new Date());
             }
             // boxSelectSet({...boxSelect, to: getMousePositionScreen(e)});
@@ -853,20 +879,27 @@ export function GraphEditor({
 
         // move active vertex
         if (dragVertex) {
-            const pos = getMousePositionWorld(e).plus(dragVertex.mouseStartOffset).grid(view.gridSize);
-
             const v = graph.vertexGet(dragVertex.vertex);
             if (v) {
+                const mouseWorld = getMousePositionWorld(e);
+                if(!dragVertex.mouseStartOffset) {
+                    dragVertex.mouseStartOffset = v.position.minus(mouseWorld);
+                }
+
+                const pos = mouseWorld.plus(dragVertex.mouseStartOffset).grid(view.gridSize);
+
                 // move other selected vertices relative to v's current position
                 if (!dragVertex.ctrlKey) {
                     for (const vId of graph.activeVertices) {
                         const vertex = graph.vertexGet(vId);
                         if (!vertex || vertex.id === v.id) continue;
                         vertex.position = new Vector2(pos.x + vertex.position.x - v.position.x, pos.y + vertex.position.y - v.position.y);
+                        ++vertex.version;
                     }
                 }
 
                 v.position = pos;
+                ++v.version;
                 updateSet(new Date());
             }
         }
@@ -905,17 +938,17 @@ export function GraphEditor({
 
     // endregion canvas interactions
 
-    const edgeClick = useCallback((e: React.MouseEvent, fromId: number, toid: number) => {
-        if (e.button !== 0) return;
-        /* graph.activeVertices = [fromId, toid];
-        e.stopPropagation();*/
-    }, []);
-
     const vertexClick = useCallback((e: React.MouseEvent, v: Vertex, active: boolean) => {
         if (e.button !== 0) return;
 
+        // shift: toggle selection
         if (e.shiftKey) {
-            if (!active) graph.activeVertices.push(v.id);
+            // add to selection
+            if (!active) {
+                graph.activeVertices.push(v.id);
+                ++v.version;
+            }
+            // remove from selection
             else {
                 const copy = [...graph.activeVertices];
                 const index = copy.indexOf(v.id);
@@ -923,18 +956,24 @@ export function GraphEditor({
                     copy.splice(index, 1);
                 }
                 graph.activeVertices = copy;
+                ++v.version;
             }
-        } else {
-            if (!active) graph.activeVertices = [v.id];
-
-            const mousePos = getMousePositionWorld(e);
-            dragVertexSet({vertex: v.id, mouseStartOffset: v.position.minus(mousePos), ctrlKey: e.ctrlKey});
+        }
+        // no shift
+        else {
+            // if not already active: reset selection
+            if (!active) {
+                graph.activeVerticesIncrementVersion();
+                graph.activeVertices = [v.id];
+                ++v.version;
+            }
+            dragVertexSet({vertex: v.id, mouseStartOffset: undefined, ctrlKey: e.ctrlKey});
         }
 
         e.stopPropagation();
         e.preventDefault();
         updateSet(new Date());
-    }, [graph, getMousePositionWorld]);
+    }, [graph]);
 
     const renderOverlappingForbidden = useCallback((graph: Graph) => {
         if (!graph || !showOverlappingForbidden) return [];
@@ -942,7 +981,11 @@ export function GraphEditor({
         const activeVerticesString = activeVertices.join(',');
 
         // update filtered graphs if selection changed
-        if (!ArrayEquals(graph.activeVertices, overlappingData.activeVertices)) {
+        if (
+            !ArrayEquals(graph.activeVertices, overlappingData.activeVertices)
+            || overlappingData.forbiddenVersion !== graph.forbiddenVersion
+            || overlappingData.cliquesVersion !== graph.cliquesVersion
+        ) {
             overlappingData.activeVertices = [...graph.activeVertices];
 
             overlappingData.forbidden = [];
@@ -977,7 +1020,9 @@ export function GraphEditor({
         return {
             forbidden: overlappingData.forbidden.map((ownVertices: number[], index: number) => {
                 return <button key={index} className="block border-b w-full cursor" onClick={() => {
+                    graph.activeVerticesIncrementVersion();
                     graph.activeVertices = ownVertices;
+                    graph.activeVerticesIncrementVersion();
                     updateSet(new Date());
                 }}>
                     <span className="font-bold mr-2">{activeVerticesString}</span>
@@ -986,7 +1031,9 @@ export function GraphEditor({
             }),
             forbiddenNot: overlappingData.forbiddenNot.map((ownVertices: number[], index: number) => {
                 return <button key={index} className="block border-b w-full cursor" onClick={() => {
+                    graph.activeVerticesIncrementVersion();
                     graph.activeVertices = ownVertices;
+                    graph.activeVerticesIncrementVersion();
                     updateSet(new Date());
                 }}>
                     <span>{ownVertices.join(',')}</span>
@@ -995,7 +1042,9 @@ export function GraphEditor({
             cliques: overlappingData.cliques.map((set, index: number) => {
                 const ownVertices = Array.from(set);
                 return <button key={index} className="block border-b w-full cursor" onClick={() => {
+                    graph.activeVerticesIncrementVersion();
                     graph.activeVertices = ownVertices;
+                    graph.activeVerticesIncrementVersion();
                     updateSet(new Date());
                 }}>
                     <span className="font-bold mr-2">{activeVerticesString}</span>
@@ -1005,7 +1054,9 @@ export function GraphEditor({
             cliquesNot: overlappingData.cliquesNot.map((set, index: number) => {
                 const ownVertices = Array.from(set);
                 return <button key={index} className="block border-b w-full cursor" onClick={() => {
+                    graph.activeVerticesIncrementVersion();
                     graph.activeVertices = ownVertices;
+                    graph.activeVerticesIncrementVersion();
                     updateSet(new Date());
                 }}>
                     <span>{ownVertices.join(',')}</span>
@@ -1013,20 +1064,6 @@ export function GraphEditor({
             }),
         }
     }, [update, overlappingData, showOverlappingForbidden]);
-
-    const propertiesEdit = useCallback((graph: Graph, properties: PropertyData) => {
-        if(!graph || graph.activeVertices.length === 0) return;
-
-        // update current selection to changed properties
-        /*for(const vId of graph.activeVertices) {
-            const vertex = graph.vertexGet(vId);
-            if(!vertex) continue;
-
-            vertex.style =
-        }
-
-        updateSet(new Date());*/
-    }, []);
 
     let overlapping = undefined;
     if(windowType === 'main') {
@@ -1152,7 +1189,7 @@ export function GraphEditor({
                 </div>}
 
                 {/*properties display*/ properties && <div className="flex-row">
-                    <PropertiesDisplay graph={graph} properties={properties} propertiesChanged={propertiesEdit} updateGraph={() => updateSet(new Date())} />
+                    <PropertiesDisplay graph={graph} properties={properties} updateGraph={() => updateSet(new Date())} />
                 </div>}
             </div>
             <div className="flex-1 relative">
@@ -1166,7 +1203,6 @@ export function GraphEditor({
                 >
                     <g ref={worldRef} transform={`translate(${view.pan.x}, ${view.pan.y}) scale(${view.zoom})`}>
                         <GraphRender graph={graph}
-                                     edgeClick={edgeClick}
                                      vertexClick={vertexClick}
                                      activeVertices={graph.activeVertices}
 
@@ -1355,14 +1391,15 @@ function EdgeGetterByPropertyDataFieldName(c: PropertyDataFieldName | undefined)
 const PropertiesDisplay = React.memo((props: {
     graph: Graph,
     properties: PropertyData,
-    propertiesChanged: (g: Graph, p: PropertyData) => void,
     updateGraph: () => void,
 }) => {
     const [_, updateSet] = useState<Date>(new Date());
 
     const propertiesChanged = useCallback(() => {
-        props.propertiesChanged(props.graph, props.properties);
-    }, [props.graph, props.properties, props.propertiesChanged]);
+        // called after every property value change
+        // could use for e.g. setting the current selection values BUT
+        // no way to know vertex / edges -> did not do that option
+    }, [props.graph, props.properties]);
 
     const popover = useRef<HTMLDivElement | null>(null);
     const [colorOpen, colorOpenSet] = useState<PropertyDataFieldName>();
@@ -1499,9 +1536,8 @@ const PropertiesDisplay = React.memo((props: {
         const getter = VertexGetterByPropertyDataFieldName(c);
         if(!getter) return;
         propertySet(p, c, ''+getter(vertex));
-        props.propertiesChanged(graph, p);
         updateSet(new Date());
-    }, [props.propertiesChanged]);
+    }, []);
     const keyboardFunctionPropertiesEdgePickSingle = useCallback((graph: Graph, p: PropertyData, c: PropertyDataFieldName|undefined) => {
         if (!graph) return;
 
@@ -1517,12 +1553,11 @@ const PropertiesDisplay = React.memo((props: {
                 const lineStyle = graph.edgeStyle.get(fromId)?.get(toId) ?? LineStyleDefault();
                 propertySet(p, c, ''+getter(lineStyle));
 
-                props.propertiesChanged(graph, p);
                 updateSet(new Date());
                 return;
             }
         }
-    }, [props.propertiesChanged]);
+    }, []);
 
     // keyboard functions depending on properties
     useEffect(() => {
@@ -1676,74 +1711,66 @@ const PropertiesDisplay = React.memo((props: {
     </>;
 })
 
-const GraphRender = React.memo((props: {
+const EdgeRender = React.memo((props: {
     graph: Graph,
-    activeEdge?: Vector2,
-    activeVertices: number[],
-    update?: Date,
+    from: Vertex,
+    to: Vertex,
+    versionFrom: number,
+    versionTo: number
+}) => {
+    // console.log('edge re-render', props.from.id, props.to.id);
 
-    edgeClick: (e: React.MouseEvent, fromId: number, toId: number) => void,
+    const graph = props.graph;
+    const v = props.from;
+    const n = props.to;
+
+    const key = v.id + "-" + n.id;
+
+
+    /*const active = activeEdge && (
+        (v.id === activeEdge.x && nId === activeEdge.y)
+        || (v.id === activeEdge.y && nId === activeEdge.x)
+    );*/
+    const active = false;
+
+    const fromActive = graph.activeVertices.includes(v.id);
+    const toActive = graph.activeVertices.includes(n.id);
+    const endpointActive = fromActive || toActive;
+    const endpointBothActive = fromActive && toActive;
+
+    const lineStyle = graph.edgeStyle.get(v.id)?.get(n.id) ?? LineStyleDefault();
+    const forbidden = graph.edgesForbidden.get(v.id)?.has(n.id);
+
+    const color = forbidden ? '#ff0000' : lineStyle.color;
+    return <>
+        <line
+            key={key + "-bg"}
+            data-ui="true"
+            x1={v.position.x} y1={v.position.y}
+            x2={n?.position.x} y2={n?.position.y}
+            stroke={active ? 'orange' : '#ffffff02'}
+            strokeWidth={(active ? 0 : 16) + (!isNaN(lineStyle.weight) ? lineStyle.weight : 1)}
+            strokeDasharray={lineStyle.type === "dashed" ? "6,4" : lineStyle.type === "dotted" ? "2,4" : undefined}
+        />
+        <line
+            key={key}
+            data-edge-from={v.id} data-edge-to={n.id}
+            x1={v.position.x} y1={v.position.y}
+            x2={n?.position.x} y2={n?.position.y}
+            stroke={endpointActive ? ColorHexSetTransparency(color, endpointBothActive ? 'a0' : '80') : color + '40'}
+            strokeWidth={(endpointActive ? (endpointBothActive ? 2 : 1) : 0) + lineStyle.weight}
+            strokeDasharray={(endpointActive && !endpointBothActive) || lineStyle.type === "dashed" ? "6,8" : lineStyle.type === "dotted" ? "2,4" : undefined}
+        />
+    </>;
+});
+
+const VertexRender = React.memo((props: {
+    graph: Graph,
+    vertex: Vertex,
+    version: number,
     vertexClick: (e: React.MouseEvent, vertex: Vertex, active: boolean) => void,
 }) => {
-    // console.log('graph re-render')
-
-    const renderEdges = useCallback((graph: Graph) => {
-        if (!graph) return;
-        const activeEdge = props.activeEdge;
-        const activeVertices = props.activeVertices;
-
-        const lines: JSX.Element[] = [];
-
-        for (const v of graph.vertices.values()) {
-            for (const nId of v.neighbors) {
-                if (v.id >= nId) continue;
-                const key = v.id + "-" + nId;
-
-                const n = graph.vertexGet(nId);
-                if (!n) continue;
-
-                const active = activeEdge && (
-                    (v.id === activeEdge.x && nId === activeEdge.y)
-                    || (v.id === activeEdge.y && nId === activeEdge.x)
-                );
-
-                const fromActive = activeVertices.includes(v.id);
-                const toActive = activeVertices.includes(nId);
-                const endpointActive = fromActive || toActive;
-                const endpointBothActive = fromActive && toActive;
-
-                const lineStyle = graph.edgeStyle.get(v.id)?.get(nId) ?? LineStyleDefault();
-                const forbidden = graph.edgesForbidden.get(v.id)?.has(nId);
-
-                const color = forbidden ? '#ff0000' : lineStyle.color;
-                lines.push(
-                    <line
-                        key={key + "-bg"}
-                        data-ui="true"
-                        x1={v.position.x} y1={v.position.y}
-                        x2={n.position.x} y2={n.position.y}
-                        stroke={active ? 'orange' : '#ffffff02'}
-                        strokeWidth={(active ? 0 : 16) + (!isNaN(lineStyle.weight) ? lineStyle.weight : 1)}
-                        strokeDasharray={lineStyle.type === "dashed" ? "6,4" : lineStyle.type === "dotted" ? "2,4" : undefined}
-                        onClick={e => props.edgeClick(e, v.id, nId)}
-                    />
-                );
-                lines.push(
-                    <line
-                        key={key}
-                        data-edge-from={v.id} data-edge-to={n.id}
-                        x1={v.position.x} y1={v.position.y}
-                        x2={n.position.x} y2={n.position.y}
-                        stroke={endpointActive ? ColorHexSetTransparency(color, endpointBothActive ? 'a0' : '80') : color + '40'}
-                        strokeWidth={(endpointActive ? (endpointBothActive ? 2 : 1) : 0) + lineStyle.weight}
-                        strokeDasharray={(endpointActive && !endpointBothActive) || lineStyle.type === "dashed" ? "6,8" : lineStyle.type === "dotted" ? "2,4" : undefined}
-                        onClick={e => props.edgeClick(e, v.id, nId)}
-                    />
-                );
-            }
-        }
-        return lines;
-    }, [props.activeEdge, props.activeVertices]);
+    // console.log('vertex re-render', props.vertex.id);
 
     const vertexLabel = useCallback((v: Vertex, style?: VertexStyle) => {
         switch (style?.show ?? 'id:label') {
@@ -1763,67 +1790,86 @@ const GraphRender = React.memo((props: {
         return v.id;
     }, []);
 
-    const renderVertices = useCallback((graph: Graph) => {
-        if (!graph) return;
-        const activeVertices = props.activeVertices;
+    const v = props.vertex;
 
-        const nodes: JSX.Element[] = [];
-        for (const v of graph.vertices.values()) {
-            const active = activeVertices.includes(v.id);
-            const style = v.style ?? VertexStyleDefault();
-            const label = vertexLabel(v, style);
+    const active = props.graph.activeVertices.includes(v.id);
+    const style = v.style ?? VertexStyleDefault();
+    const label = vertexLabel(v, style);
 
-            const cliqueAmount = graph.cliqueVertexCounts.get(v.id);
+    const cliqueAmount = props.graph.cliqueVertexCounts.get(v.id);
 
-            nodes.push(
-                <g key={v.id}
-                   data-vertex={v.id}
-                   onMouseDown={e => props.vertexClick(e, v, active)}
+    return <>
+        <g key={v.id}
+           data-vertex={v.id}
+           onMouseDown={e => props.vertexClick(e, v, active)}
+        >
+            <circle
+                cx={v.position.x} cy={v.position.y}
+                r={style.radius}
+                fill={style.bgColor}
+                stroke={style.lineStyle.color}
+                strokeWidth={(active ? 1.5 : 0) + (!isNaN(style.lineStyle.weight) ? style.lineStyle.weight : 1)}
+                strokeDasharray={v.disabled || style.lineStyle.type === "dashed" ? "6,8" : style.lineStyle.type === "dotted" ? "2,4" : undefined}
+            />
+            {label && <text
+                className="select-none"
+                x={v.position.x} y={v.position.y}
+                fill={style.textColor}
+                fontSize={14}
+                textAnchor="middle"
+                dominantBaseline="middle"
+            >
+                {label}
+            </text>}
+            {cliqueAmount && <>
+                <circle
+                    cx={v.position.x} cy={v.position.y-style.radius-1}
+                    r={8}
+                    fill={style.bgColor}
+                />
+                <text
+                    className="select-none"
+                    x={v.position.x} y={v.position.y}
+                    dy={-style.radius-1}
+                    fill={style.textColor}
+                    fontSize={14}
+                    textAnchor="middle"
+                    dominantBaseline="middle"
                 >
-                    <circle
-                        cx={v.position.x} cy={v.position.y}
-                        r={style.radius}
-                        fill={style.bgColor}
-                        stroke={style.lineStyle.color}
-                        strokeWidth={(active ? 1.5 : 0) + (!isNaN(style.lineStyle.weight) ? style.lineStyle.weight : 1)}
-                        strokeDasharray={v.disabled || style.lineStyle.type === "dashed" ? "6,8" : style.lineStyle.type === "dotted" ? "2,4" : undefined}
-                    />
-                    {label && <text
-                        className="select-none"
-                        x={v.position.x} y={v.position.y}
-                        fill={style.textColor}
-                        fontSize={14}
-                        textAnchor="middle"
-                        dominantBaseline="middle"
-                    >
-                        {label}
-                    </text>}
-                    {cliqueAmount && <>
-                        <circle
-                            cx={v.position.x} cy={v.position.y-style.radius-1}
-                            r={8}
-                            fill={style.bgColor}
-                        />
-                        <text
-                            className="select-none"
-                            x={v.position.x} y={v.position.y}
-                            dy={-style.radius-1}
-                            fill={style.textColor}
-                            fontSize={14}
-                            textAnchor="middle"
-                            dominantBaseline="middle"
-                        >
-                            {cliqueAmount}
-                        </text>
-                    </>}
-                </g>
-            );
+                    {cliqueAmount}
+                </text>
+            </>}
+        </g>
+    </>;
+});
+
+const GraphRender = React.memo((props: {
+    graph: Graph,
+    activeEdge?: Vector2,
+    activeVertices: number[],
+    update?: Date,
+
+    vertexClick: (e: React.MouseEvent, vertex: Vertex, active: boolean) => void,
+}) => {
+    const renderEdges = useCallback((graph: Graph) => {
+        if (!graph) return;
+        const lines: JSX.Element[] = [];
+
+        for (const v of graph.vertices.values()) {
+            for (const nId of v.neighbors) {
+                if (v.id >= nId) continue;
+                const n = graph.vertexGet(nId);
+                if (!n) continue;
+
+                lines.push(<EdgeRender key={v.id+"-"+n.id} graph={graph} from={v} to={n} versionFrom={v.version} versionTo={n.version} />)
+            }
         }
-        return nodes;
-    }, [props.activeVertices]);
+        return lines;
+    }, [props.activeEdge, props.activeVertices]);
 
     return <>
         {renderEdges(props.graph)}
-        {renderVertices(props.graph)}
+        {props.graph.vertices.values().toArray().map(v =>
+            <VertexRender key={v.id} graph={props.graph} vertex={v} version={v.version} vertexClick={props.vertexClick} />)}
     </>
 })
