@@ -11,11 +11,12 @@ import Graph, {
 import {Vertex, VertexStyle, VertexStyleClone} from "@/app/data/Vertex";
 import Vector2 from "@/app/data/Vector2";
 import {DateToLocalWithTime} from "@/app/util/DateUtils";
-import {ArrayContainsAll, ArrayEquals} from "@/app/util/ArrayUtils";
+import {ArrayContainsAll, ArrayEquals, ArrayLast} from "@/app/util/ArrayUtils";
 import {ColorHexSetTransparency} from "@/app/util/ColorUtils";
 import {HexColorPicker} from "react-colorful";
 import useClickOutside from "@/app/hooks/useClickOutside";
 import {PromiseWait} from "@/app/util/PromiseUtils";
+import {EventKeyboardCanFire} from "@/app/util/EventUtils";
 
 export interface SaveData {
     graphIdActive: number;
@@ -192,13 +193,12 @@ export default function GraphWindow() {
 
             // find forbidden subgraphs
             if (e.key === "f") {
+                if(!EventKeyboardCanFire(e)) return;
                 if (!e.shiftKey && !e.ctrlKey) getForbiddenSubgraphs();
             }
             // prevent window closing
             else if (e.key === "w" || e.key === "W") {
                 if(e.ctrlKey) e.preventDefault();
-
-                e.preventDefault();
             }
         };
         window.addEventListener("keydown", onKey, {passive: false});
@@ -545,6 +545,7 @@ export function GraphEditor({
 
             // delete currently selected vertices / edges
             if (e.key === "Delete" || e.key === "x") {
+                if(!EventKeyboardCanFire(e)) return;
                 keyboardDeleteSelection(graph);
                 saveDataSave();
             }
@@ -552,9 +553,11 @@ export function GraphEditor({
             else if (e.key === "Escape") {
                 graph.activeVerticesIncrementVersion();
                 graph.activeVertices = [];
+                updateSet(new Date());
             }
             // export / save
             else if (e.key === "s" || e.key === "S") {
+                if(!EventKeyboardCanFire(e)) return;
                 if (e.ctrlKey && e.shiftKey) {
                     exportSelection(svgRef.current!, graph, graph.activeVertices);
                     e.preventDefault();
@@ -564,23 +567,27 @@ export function GraphEditor({
             }
             // "e": toggle/add edges in selection
             else if (e.key === "e" || e.key === "E") {
+                if(!EventKeyboardCanFire(e)) return;
                 keyboardEdges(e, graph);
                 e.preventDefault();
                 saveDataSave();
             }
             // "d": disable selection
             else if (e.key === "d") {
+                if(!EventKeyboardCanFire(e)) return;
                 keyboardDisableSelection(graph);
                 e.preventDefault();
                 saveDataSave();
             }
             // "shift+F": toggle showing overlapping
             else if (e.key === "F") {
+                if(!EventKeyboardCanFire(e)) return;
                 keyboardToggleShowOverlappingForbidden();
                 e.preventDefault();
             }
             // "C": find maximal cliques
             else if (e.key === "c" || e.key === "C") {
+                if(!EventKeyboardCanFire(e)) return;
                 if(e.ctrlKey) return;
                 keyboardMaximalCliques(graph);
                 e.preventDefault();
@@ -659,6 +666,7 @@ export function GraphEditor({
                 }
                 // add vertex
                 else {
+                    if(!EventKeyboardCanFire(e)) return;
                     keyboardAddVertex(graph);
                     e.preventDefault();
                     saveDataSave();
@@ -751,6 +759,7 @@ export function GraphEditor({
             // "q": properties
             if (e.key === "q" || e.key === "Q") {
                 if(e.ctrlKey) return;
+                if(!EventKeyboardCanFire(e)) return;
 
                 // affect vertices
                 if(!e.altKey) {
@@ -1329,7 +1338,7 @@ export function GraphEditor({
 
 type PropertyDataFieldName =
     'lineColor' | 'bgColor' | 'textColor' // color fields
-    | 'radius' | 'lineWidth' // number fields
+    | 'radius' | 'textSize' | 'lineWidth' // number fields
 ;
 function VertexGetterByPropertyDataFieldName(c: PropertyDataFieldName | undefined): undefined | ((vertex: Vertex) => string|number) {
     switch (c) {
@@ -1339,6 +1348,8 @@ function VertexGetterByPropertyDataFieldName(c: PropertyDataFieldName | undefine
             return v => v.style.bgColor;
         case 'textColor':
             return v => v.style.textColor;
+        case 'textSize':
+            return v => v.style.textSize;
         case 'radius':
             return v => v.style.radius;
         case 'lineWidth':
@@ -1358,6 +1369,8 @@ function VertexSetterByPropertyDataFieldName(c: PropertyDataFieldName | undefine
             return (v, value) => v.style.bgColor = ''+value;
         case 'textColor':
             return (v, value) => v.style.textColor = ''+value;
+        case 'textSize':
+            return (v, value) => v.style.textSize = +value;
         case 'radius':
             return (v, value) => v.style.radius = +value;
         case 'lineWidth':
@@ -1438,6 +1451,8 @@ const PropertiesDisplay = React.memo((props: {
                 return <span>Vertex Fill Color</span>
             case 'textColor':
                 return <span>Text Color</span>
+            case 'textSize':
+                return <span>Text Size</span>
             case 'radius':
                 return <span>Vertex Radius</span>
             case 'lineWidth':
@@ -1458,6 +1473,8 @@ const PropertiesDisplay = React.memo((props: {
                 return p.vertexStyle.bgColor;
             case 'textColor':
                 return p.vertexStyle.textColor;
+            case 'textSize':
+                return p.vertexStyle.textSize;
             case 'radius':
                 return p.vertexStyle.radius;
             case 'lineWidth':
@@ -1480,6 +1497,10 @@ const PropertiesDisplay = React.memo((props: {
                 break;
             case 'textColor':
                 p.vertexStyle.textColor = v;
+                break;
+
+            case 'textSize':
+                p.vertexStyle.textSize = +v;
                 break;
             case 'radius':
                 p.vertexStyle.radius = +v;
@@ -1569,6 +1590,11 @@ const PropertiesDisplay = React.memo((props: {
         }
     }, []);
 
+    const keyboardFocusVertexLabel = useCallback(async () => {
+        await PromiseWait(1);
+        document.getElementById('vertex-label-input').focus();
+    }, []);
+
     // keyboard functions depending on properties
     useEffect(() => {
         const onKey = (e: KeyboardEvent) => {
@@ -1579,6 +1605,7 @@ const PropertiesDisplay = React.memo((props: {
             if (e.key === "q" || e.key === "Q") {
                 // only do ctrl here
                 if(!e.ctrlKey) return;
+                if(!EventKeyboardCanFire(e)) return;
 
                 // affect vertices
                 if(!e.altKey) {
@@ -1605,24 +1632,36 @@ const PropertiesDisplay = React.memo((props: {
             // change numerical values
             else if(e.key === '-') {
                 if(e.ctrlKey || e.shiftKey) return;
+                if(!numberOpen) return;
                 propertySet(props.properties, numberOpen, Math.min(50, (+propertyGet(props.properties, numberOpen)) - 1) + '');
                 updateSet(new Date());
                 e.preventDefault();
             }
             else if(e.key === '+') {
                 if(e.ctrlKey || e.shiftKey) return;
+                if(!numberOpen) return;
                 propertySet(props.properties, numberOpen, Math.min(50, (+propertyGet(props.properties, numberOpen)) + 1) + '');
                 updateSet(new Date());
+                e.preventDefault();
+            }
+            // open vertex text box
+            else if(e.key === 'Enter') {
+                numberOpenSet(undefined);
+                colorOpenSet('textColor');
+                keyboardFocusVertexLabel();
                 e.preventDefault();
             }
         };
         window.addEventListener("keydown", onKey);
         return () => window.removeEventListener("keydown", onKey);
     }, [props.graph, props.properties, colorOpen, numberOpen,
-        keyboardApplySinglePropertyToSelection]);
+        keyboardApplySinglePropertyToSelection, keyboardFocusVertexLabel]);
 
     const colorValue = propertyGet(props.properties, colorOpen);
     const numberValue = propertyGet(props.properties, numberOpen);
+
+    const lastVertexId = ArrayLast(props.graph.activeVertices);
+    const lastVertex = lastVertexId ? props.graph.vertexGet(lastVertexId) : undefined;
 
     return <>
         <div className="relative">
@@ -1651,6 +1690,11 @@ const PropertiesDisplay = React.memo((props: {
             <span className="mx-2">|</span>
 
             <button className="swatch px-1 mr-2" style={{width: 'unset'}}
+                    onClick={() => numberOpenSetWithWait(numberOpen, 'textSize')}
+            >
+                t:{props.properties.vertexStyle.textSize}
+            </button>
+            <button className="swatch px-1 mr-2" style={{width: 'unset'}}
                     onClick={() => numberOpenSetWithWait(numberOpen, 'lineWidth')}
             >
                 w:{props.properties.vertexStyle.lineStyle.weight}
@@ -1673,7 +1717,7 @@ const PropertiesDisplay = React.memo((props: {
                         updateSet(new Date());
                     }}/>
                     <div className="text-center">
-                        <input className='my-2 text-center' type='text' value={colorValue}
+                        <input className='mt-2 text-center' type='text' value={colorValue}
                                onChange={v => {
                                    propertySet(props.properties, colorOpen, v.target.value);
                                    updateSet(new Date());
@@ -1685,11 +1729,11 @@ const PropertiesDisplay = React.memo((props: {
                         {titleGet(numberOpen)}
                     </h4>
                     <div className="text-center px-3">
-                        <kbd onClick={() => {
+                    <kbd onClick={() => {
                             propertySet(props.properties, numberOpen, ((+numberValue) - 1) + '');
                             updateSet(new Date());
                         }}>-</kbd>
-                        <input className='my-2 text-center' type='number' min={0} max={50}
+                        <input className="text-center" type='number' min={0} max={50}
                                value={+numberValue} onChange={v => {
                             propertySet(props.properties, numberOpen, v.target.value);
                             updateSet(new Date());
@@ -1701,7 +1745,7 @@ const PropertiesDisplay = React.memo((props: {
                     </div>
                 </>}
 
-                <div className="text-center mb-2">
+                <div className="text-center my-3">
                     <button className="tooltip"
                             onClick={() => keyboardApplySinglePropertyToSelection(props.graph, props.properties, colorOpen ?? numberOpen)}>
                         <kbd>Ctrl+Q</kbd>
@@ -1715,6 +1759,21 @@ const PropertiesDisplay = React.memo((props: {
                             Note: only works while the property window is open.
                         </div>
                     </button>
+
+                    {colorOpen === "textColor" && lastVertex && <>
+                        <div className="mt-3">Vertex Label</div>
+                        <input id="vertex-label-input"
+                            className='mb-2 text-center' type='text' value={lastVertex.label ?? ''}
+                            placeholder="Label"
+                            onChange={v => {
+                                if(lastVertex) {
+                                    lastVertex.label = v.target.value;
+                                    ++lastVertex.version;
+                                }
+                                updateSet(new Date());
+                                props.updateGraph();
+                            }}/>
+                    </>}
                 </div>
             </div>
         </div>
@@ -1778,20 +1837,7 @@ const VertexRender = React.memo((props: {
     // console.log('vertex re-render', props.vertex.id);
 
     const vertexLabel = useCallback((v: Vertex, style?: VertexStyle) => {
-        switch (style?.show ?? 'id:label') {
-            case 'id:label':
-                break;
-            case 'id':
-                return v.id;
-            case 'label':
-                return v.label;
-            case 'none':
-                return '';
-            default:
-                console.error('drawing vertex: style.show unknown: ', style?.show);
-                break;
-        }
-        if(v.label) return v.id + ':' + v.label;
+        if(v.label) return v.label;
         return v.id;
     }, []);
 
@@ -1819,7 +1865,7 @@ const VertexRender = React.memo((props: {
                 className="select-none"
                 x={v.position.x} y={v.position.y}
                 fill={style.textColor}
-                fontSize={14}
+                fontSize={style.textSize}
                 textAnchor="middle"
                 dominantBaseline="middle"
             >
@@ -1836,7 +1882,7 @@ const VertexRender = React.memo((props: {
                     x={v.position.x} y={v.position.y}
                     dy={-style.radius-1}
                     fill={style.textColor}
-                    fontSize={14}
+                    fontSize={style.textSize}
                     textAnchor="middle"
                     dominantBaseline="middle"
                 >

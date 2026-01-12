@@ -14,12 +14,10 @@ export interface VertexData {
     style: VertexStyle;
 }
 
-export type VertexShowOptions = 'id:label' | 'id' | 'label' | 'none';
-
 export interface VertexStyle {
-    show: VertexShowOptions;
     radius: number;
     textColor: string;
+    textSize: number;
     bgColor: string;
     lineStyle: LineStyle;
 }
@@ -110,6 +108,7 @@ export class Vertex {
         vertex.disabled = data.disabled ?? false;
         vertex.position = new Vector2(data.x, data.y);
         vertex.style = data.style ?? VertexStyleDefault();
+        vertex.style.textSize ??= 14;
         return vertex;
     }
 

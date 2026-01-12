@@ -34,9 +34,9 @@ export function LineStyleDefault(): LineStyle {
 
 export function VertexStyleDefault(): VertexStyle {
     return {
-        show: 'id:label',
         radius: 18,
         textColor: '#000000',
+        textSize: 14,
         bgColor: '#ffffff',
         lineStyle: LineStyleDefault(),
     };

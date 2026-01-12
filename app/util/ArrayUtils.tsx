@@ -16,3 +16,8 @@ export function ArrayContainsAll<T>(arrayHasElements: T[], elements: T[]): boole
     }
     return true;
 }
+
+export function ArrayLast<T>(array: T[]): T|undefined {
+    if(array===undefined || array.length===0) return undefined;
+    return array[array.length-1];
+}
