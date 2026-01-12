@@ -352,7 +352,12 @@ export function GraphEditor({
     // region keyboard
     const keyboardDeleteSelection = useCallback((graph: Graph) => {
         if (graph.activeVertices.length > 0) {
-            graph.activeVerticesIncrementVersion();
+            for (const vId of graph.activeVertices) {
+                const v = graph.vertexGet(vId);
+                if (!v) continue;
+                graph.vertexRemove(v);
+                ++v.version;
+            }
             graph.activeVertices = [];
             updateSet(new Date());
         }
