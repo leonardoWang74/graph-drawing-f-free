@@ -1,22 +1,18 @@
 'use client'
 
 import React, {JSX, useCallback, useEffect, useRef, useState} from "react";
-import Graph, {
-    GraphData,
-    LineStyle,
-    LineStyleClone,
-    LineStyleDefault,
-    VertexStyleDefault
-} from "@/app/data/Graph";
+import Graph, {GraphData, LineStyle, LineStyleClone, LineStyleDefault, VertexStyleDefault} from "@/app/data/Graph";
 import {Vertex, VertexStyle, VertexStyleClone} from "@/app/data/Vertex";
 import Vector2 from "@/app/data/Vector2";
 import {DateToLocalWithTime} from "@/app/util/DateUtils";
-import {ArrayContainsAll, ArrayEquals, ArrayLast} from "@/app/util/ArrayUtils";
+import {ArrayContainsAll, ArrayEquals} from "@/app/util/ArrayUtils";
 import {ColorHexSetTransparency} from "@/app/util/ColorUtils";
 import {HexColorPicker} from "react-colorful";
 import useClickOutside from "@/app/hooks/useClickOutside";
 import {PromiseWait} from "@/app/util/PromiseUtils";
 import {EventKeyboardCanFire} from "@/app/util/EventUtils";
+
+import {LatexTypeset, ViewBoxGet} from "@/app/util/LatexUtils";
 
 export interface SaveData {
     graphIdActive: number;
@@ -871,14 +867,14 @@ export function GraphEditor({
                     && worldFrom.y - slack <= vertex.position.y && vertex.position.y <= worldTo.y + slack
                 ) {
                     // add to selection
-                    if (!boxSelect.ctrl || boxSelect.shift) {
+                    if (!e.ctrlKey || e.shiftKey) {
                         if (!active.includes(vertex.id)) {
                             active.push(vertex.id);
                             continue;
                         }
                     }
                     // ctrl: remove from selection
-                    if (boxSelect.ctrl) {
+                    if (e.ctrlKey) {
                         const index = active.indexOf(vertex.id);
                         if (index >= 0) active.splice(index, 1);
                     }
@@ -1082,6 +1078,22 @@ export function GraphEditor({
         }
     }, [update, overlappingData, showOverlappingForbidden]);
 
+    const renderEdges = useCallback((graph: Graph) => {
+        const lines: JSX.Element[] = [];
+        if (!graph) return lines;
+
+        for (const v of graph.vertices.values()) {
+            for (const nId of v.neighbors) {
+                if (v.id >= nId) continue;
+                const n = graph.vertexGet(nId);
+                if (!n) continue;
+
+                lines.push(<EdgeRender key={v.id+"-"+n.id} graph={graph} from={v} to={n} versionFrom={v.version} versionTo={n.version} />)
+            }
+        }
+        return lines;
+    }, []);
+
     let overlapping = undefined;
     if(windowType === 'main') {
         overlapping = renderOverlappingForbidden(graph);
@@ -1109,6 +1121,10 @@ export function GraphEditor({
                                     </li>
                                     <li>
                                         Use <kbd>Ctrl+C</kbd> to copy and <kbd>Ctrl+V</kbd> paste selected vertices.
+                                    </li>
+                                    <li>
+                                        Use <kbd>Enter</kbd> to set a vertex label. Start a vertex label with the $ dollar sign e.g. "$C_v"
+                                        to render LateX math formulas.
                                     </li>
                                 </ul>
                             </div>
@@ -1209,22 +1225,25 @@ export function GraphEditor({
                     <PropertiesDisplay graph={graph} properties={properties} updateGraph={() => updateSet(new Date())} />
                 </div>}
             </div>
-            <div className="flex-1 relative">
+            <div className="flex-1 relative bg-gray-50 overflow-hidden"
+                 onMouseDown={onMouseDownCanvas}
+                 onMouseMove={onMouseMove}
+                 onMouseUp={onMouseUp}
+                 onWheel={onWheel}
+            >
                 <svg
                     ref={svgRef}
-                    className="h-full w-full bg-gray-50 relative"
-                    onMouseDown={onMouseDownCanvas}
-                    onMouseMove={onMouseMove}
-                    onMouseUp={onMouseUp}
-                    onWheel={onWheel}
+                    className="relative h-full w-full"
                 >
-                    <g ref={worldRef} transform={`translate(${view.pan.x}, ${view.pan.y}) scale(${view.zoom})`}>
-                        <GraphRender graph={graph}
-                                     vertexClick={vertexClick}
-                                     activeVertices={graph.activeVertices}
+                    <style>
+                        {".katex-html {display: none;}"}
+                    </style>
 
-                                     update={update}
-                        />
+                    <g ref={worldRef} transform={`translate(${view.pan.x}, ${view.pan.y}) scale(${view.zoom})`}>
+                        {renderEdges(graph)}
+                        {graph.vertices.values().toArray().map(v =>
+                            <VertexRender key={v.id} graph={graph} vertex={v} version={v.version}
+                                          vertexClick={vertexClick}/>)}
                     </g>
 
                     {/* mouse position */ <text
@@ -1340,7 +1359,8 @@ type PropertyDataFieldName =
     'lineColor' | 'bgColor' | 'textColor' // color fields
     | 'radius' | 'textSize' | 'lineWidth' // number fields
 ;
-function VertexGetterByPropertyDataFieldName(c: PropertyDataFieldName | undefined): undefined | ((vertex: Vertex) => string|number) {
+
+function VertexGetterByPropertyDataFieldName(c: PropertyDataFieldName | undefined): undefined | ((vertex: Vertex) => string | number) {
     switch (c) {
         case 'lineColor':
             return v => v.style.lineStyle.color;
@@ -1361,14 +1381,15 @@ function VertexGetterByPropertyDataFieldName(c: PropertyDataFieldName | undefine
             return undefined;
     }
 }
-function VertexSetterByPropertyDataFieldName(c: PropertyDataFieldName | undefined): undefined | ((vertex: Vertex, value: string|number) => void) {
+
+function VertexSetterByPropertyDataFieldName(c: PropertyDataFieldName | undefined): undefined | ((vertex: Vertex, value: string | number) => void) {
     switch (c) {
         case 'lineColor':
-            return (v, value) => v.style.lineStyle.color = ''+value;
+            return (v, value) => v.style.lineStyle.color = '' + value;
         case 'bgColor':
-            return (v, value) => v.style.bgColor = ''+value;
+            return (v, value) => v.style.bgColor = '' + value;
         case 'textColor':
-            return (v, value) => v.style.textColor = ''+value;
+            return (v, value) => v.style.textColor = '' + value;
         case 'textSize':
             return (v, value) => v.style.textSize = +value;
         case 'radius':
@@ -1382,10 +1403,11 @@ function VertexSetterByPropertyDataFieldName(c: PropertyDataFieldName | undefine
             return undefined;
     }
 }
-function EdgeSetterByPropertyDataFieldName(c: PropertyDataFieldName | undefined): undefined | ((style: LineStyle, value: string|number) => void) {
+
+function EdgeSetterByPropertyDataFieldName(c: PropertyDataFieldName | undefined): undefined | ((style: LineStyle, value: string | number) => void) {
     switch (c) {
         case 'lineColor':
-            return (style, value) => style.color = ''+value;
+            return (style, value) => style.color = '' + value;
         case 'lineWidth':
             return (style, value) => style.weight = +value;
         case undefined:
@@ -1395,7 +1417,8 @@ function EdgeSetterByPropertyDataFieldName(c: PropertyDataFieldName | undefined)
             return undefined;
     }
 }
-function EdgeGetterByPropertyDataFieldName(c: PropertyDataFieldName | undefined): undefined | ((style: LineStyle) => string|number) {
+
+function EdgeGetterByPropertyDataFieldName(c: PropertyDataFieldName | undefined): undefined | ((style: LineStyle) => string | number) {
     switch (c) {
         case 'lineColor':
             return style => style.color;
@@ -1592,7 +1615,7 @@ const PropertiesDisplay = React.memo((props: {
 
     const keyboardFocusVertexLabel = useCallback(async () => {
         await PromiseWait(1);
-        document.getElementById('vertex-label-input').focus();
+        document.getElementById('vertex-label-input')?.focus();
     }, []);
 
     // keyboard functions depending on properties
@@ -1648,7 +1671,7 @@ const PropertiesDisplay = React.memo((props: {
             else if(e.key === 'Enter') {
                 numberOpenSet(undefined);
                 colorOpenSet('textColor');
-                keyboardFocusVertexLabel();
+                keyboardFocusVertexLabel().then();
                 e.preventDefault();
             }
         };
@@ -1659,9 +1682,6 @@ const PropertiesDisplay = React.memo((props: {
 
     const colorValue = propertyGet(props.properties, colorOpen);
     const numberValue = propertyGet(props.properties, numberOpen);
-
-    const lastVertexId = ArrayLast(props.graph.activeVertices);
-    const lastVertex = lastVertexId ? props.graph.vertexGet(lastVertexId) : undefined;
 
     return <>
         <div className="relative">
@@ -1760,19 +1780,23 @@ const PropertiesDisplay = React.memo((props: {
                         </div>
                     </button>
 
-                    {colorOpen === "textColor" && lastVertex && <>
+                    {colorOpen === "textColor" && props.graph.activeVertices.length>0 && <>
                         <div className="mt-3">Vertex Label</div>
-                        <input id="vertex-label-input"
-                            className='mb-2 text-center' type='text' value={lastVertex.label ?? ''}
+                        <textarea id="vertex-label-input"
+                            className='mb-2 text-center border rounded' value={props.graph.vertexGet(props.graph.activeVertices[0])?.label ?? ''}
                             placeholder="Label"
+                            style={{minHeight: "50px"}}
                             onChange={v => {
-                                if(lastVertex) {
-                                    lastVertex.label = v.target.value;
-                                    ++lastVertex.version;
+                                for(const vId of props.graph.activeVertices) {
+                                    const vertex = props.graph.vertexGet(vId);
+                                    if(!vertex) continue;
+                                    vertex.label = v.target.value;
+                                    ++vertex.version;
                                 }
                                 updateSet(new Date());
                                 props.updateGraph();
-                            }}/>
+                            }}>
+                        </textarea>
                     </>}
                 </div>
             </div>
@@ -1835,22 +1859,46 @@ const VertexRender = React.memo((props: {
     vertexClick: (e: React.MouseEvent, vertex: Vertex, active: boolean) => void,
 }) => {
     // console.log('vertex re-render', props.vertex.id);
+    const [svg, svgSet] = useState<{
+        width: number,
+        height: number,
+        element: React.ReactElement,
+    }>();
 
-    const vertexLabel = useCallback((v: Vertex, style?: VertexStyle) => {
-        if(v.label) return v.label;
-        return v.id;
-    }, []);
+    const getSvg = useCallback(async () => {
+        const v = props.vertex;
+        if(!v) return;
+
+        const promise = v.label?.startsWith('$') ? LatexTypeset(v.label.substring(1)) : undefined;
+        if(!promise) return;
+        let svgRender = await promise;
+
+        // find viewbox as string
+        const viewBox = ViewBoxGet(svgRender);
+        const element = <g dangerouslySetInnerHTML={{__html: svgRender}}></g>;
+
+        svgSet({
+            width: viewBox.width,
+            height: viewBox.height,
+            element,
+        });
+    }, [props.vertex.label]);
+
+    useEffect(() => {
+        getSvg().then();
+    }, [props.vertex.label]);
 
     const v = props.vertex;
 
     const active = props.graph.activeVertices.includes(v.id);
     const style = v.style ?? VertexStyleDefault();
-    const label = vertexLabel(v, style);
+    const scale = (active ? 0.25 : 0) + style.textSize / 14;
 
     const cliqueAmount = props.graph.cliqueVertexCounts.get(v.id);
 
     return <>
         <g data-vertex={v.id}
+           x={v.position.x} y={v.position.y}
            onMouseDown={e => props.vertexClick(e, v, active)}
         >
             <circle
@@ -1861,25 +1909,38 @@ const VertexRender = React.memo((props: {
                 strokeWidth={(active ? 1.5 : 0) + (!isNaN(style.lineStyle.weight) ? style.lineStyle.weight : 1)}
                 strokeDasharray={v.disabled || style.lineStyle.type === "dashed" ? "6,8" : style.lineStyle.type === "dotted" ? "2,4" : undefined}
             />
-            {label && <text
+            {svg ?
+                <g transform={`translate(${v.position.x - scale * svg.width / 2}, ${v.position.y - scale * svg.height / 2}) scale(${scale})`}>
+                    <rect
+                        x={-scale * svg.width * 0.25}
+                        y={-scale * svg.height * 0.25}
+                        fill="#ffffff05"
+                        width={scale * svg.width}
+                        height={scale * svg.height}
+                    />
+
+                    {svg.element}
+                </g> :
+                <text className="select-none"
+                      x={v.position.x} y={v.position.y}
+                      fill={style.textColor}
+                      fontSize={style.textSize}
+                      fontWeight={active && style.radius<3 ? 'bold' : undefined}
+                      textAnchor="middle"
+                      dominantBaseline="middle"
+            >
+                {v.label ? v.label : v.id}
+            </text>
+        }
+        {cliqueAmount && <>
+            <circle
+                cx={v.position.x} cy={v.position.y - style.radius - 1}
+                r={8}
+                fill={style.bgColor}
+            />
+            <text
                 className="select-none"
                 x={v.position.x} y={v.position.y}
-                fill={style.textColor}
-                fontSize={style.textSize}
-                textAnchor="middle"
-                dominantBaseline="middle"
-            >
-                {label}
-            </text>}
-            {cliqueAmount && <>
-                <circle
-                    cx={v.position.x} cy={v.position.y-style.radius-1}
-                    r={8}
-                    fill={style.bgColor}
-                />
-                <text
-                    className="select-none"
-                    x={v.position.x} y={v.position.y}
                     dy={-style.radius-1}
                     fill={style.textColor}
                     fontSize={style.textSize}
@@ -1892,33 +1953,3 @@ const VertexRender = React.memo((props: {
         </g>
     </>;
 });
-
-const GraphRender = React.memo((props: {
-    graph: Graph,
-    activeVertices: number[],
-    update?: Date,
-
-    vertexClick: (e: React.MouseEvent, vertex: Vertex, active: boolean) => void,
-}) => {
-    const renderEdges = useCallback((graph: Graph) => {
-        const lines: JSX.Element[] = [];
-        if (!graph) return lines;
-
-        for (const v of graph.vertices.values()) {
-            for (const nId of v.neighbors) {
-                if (v.id >= nId) continue;
-                const n = graph.vertexGet(nId);
-                if (!n) continue;
-
-                lines.push(<EdgeRender key={v.id+"-"+n.id} graph={graph} from={v} to={n} versionFrom={v.version} versionTo={n.version} />)
-            }
-        }
-        return lines;
-    }, [props.activeVertices]);
-
-    return <>
-        {renderEdges(props.graph)}
-        {props.graph.vertices.values().toArray().map(v =>
-            <VertexRender key={v.id} graph={props.graph} vertex={v} version={v.version} vertexClick={props.vertexClick} />)}
-    </>
-})
