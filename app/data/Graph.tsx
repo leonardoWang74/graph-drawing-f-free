@@ -4,6 +4,7 @@ import Subsets from "@/app/util/Subsets";
 import {ArrayEquals} from "@/app/util/ArrayUtils";
 import {SortNumberDescending} from "@/app/util/SortUtils";
 import {BijectionsCombination, BijectionsGraph} from "@/app/util/Bijections";
+import {ViewData} from "@/app/page";
 
 export interface GraphData {
     id: number;
@@ -11,6 +12,7 @@ export interface GraphData {
     savedLast: string;
     vertices: VertexData[];
     edgeStyle: Record<number, Record<number, LineStyle>>;
+    viewData: ViewData|undefined;
 }
 
 export type LineType = "solid" | "dashed" | "dotted";
@@ -42,10 +44,104 @@ export function VertexStyleDefault(): VertexStyle {
     };
 }
 
+export interface SubgraphWithHull {
+    clique: Set<number>;
+    hull: Vector2[];
+}
+
+type CellKey = string;
+
+class SpatialGrid {
+    private readonly cellSize: number;
+    private vertices: Set<number> = new Set<number>();
+    public cells = new Map<CellKey, Set<Vertex>>();
+    private cellKeys = new Map<number, { key: CellKey, version: number }>();
+
+    constructor(cellSize = 1000) {
+        this.cellSize = cellSize;
+    }
+
+    private key(position: Vector2): CellKey {
+        return `${position.x},${position.y}`;
+    }
+
+    private cellCoords(position: Vector2) {
+        return new Vector2(Math.floor(position.x / this.cellSize), Math.floor(position.y / this.cellSize));
+    }
+
+    /** insert a vertex if not already contained. Else, check if the version was increased -> update */
+    public insertOrUpdate(v: Vertex) {
+        if(!this.insert(v)) return;
+
+        // do not update if vertex version is the same
+        const oldCell = this.cellKeys.get(v.id);
+        if(oldCell) {
+            if(oldCell.version === v.version) return;
+        }
+
+        this.update(v);
+    }
+
+    /** returns TRUE if the grid already contained the vertex. Else false */
+    public insert(v: Vertex): boolean {
+        if(this.vertices.has(v.id)) return true;
+        this.vertices.add(v.id);
+
+        const cellCoords = this.cellCoords(v.position);
+        const k = this.key(cellCoords);
+        if (!this.cells.has(k)) this.cells.set(k, new Set());
+        this.cells.get(k)!.add(v);
+        this.cellKeys.set(v.id, {key: k, version: v.version}); // store for fast updates
+        return false;
+    }
+
+    public update(v: Vertex) {
+        const cellCoords = this.cellCoords(v.position);
+        const newKey = this.key(cellCoords);
+
+        // remove from old cell
+        const oldCell = this.cellKeys.get(v.id);
+        if(oldCell) {
+            if (newKey === oldCell) return;
+            this.cells.get(oldCell.key)?.delete(v);
+        }
+
+        // add to new cell
+        if (!this.cells.has(newKey)) this.cells.set(newKey, new Set());
+        this.cells.get(newKey)!.add(v);
+        this.cellKeys.set(v.id, {key: newKey, version: v.version});
+    }
+
+    public query(from: Vector2, to: Vector2): Vertex[] {
+        const minX = Math.floor(from.x / this.cellSize) -1;
+        const minY = Math.floor(from.y / this.cellSize) -1;
+
+        const maxX = Math.ceil(to.x / this.cellSize) +1;
+        const maxY = Math.ceil(to.y / this.cellSize) +1;
+
+        const result: Vertex[] = [];
+
+        // only check the cells inside the viewport
+        for (let x = minX; x <= maxX; x++) {
+            for (let y = minY; y <= maxY; y++) {
+                const k = this.key(new Vector2(x,y));
+                const cell = this.cells.get(k);
+                if (!cell) continue;
+                for (const v of cell) {
+                    if(!v.isVisible(from, to)) continue;
+                    result.push(v);
+                }
+            }
+        }
+        return result;
+    }
+}
+
 export default class Graph {
     public id: number;
     public name: string = 'A graph';
     public savedLast: string = '';
+    public viewData: ViewData|undefined;
 
     public active: boolean = false;
 
@@ -57,7 +153,7 @@ export default class Graph {
     public forbiddenInduced: number[][] = [];
     public forbiddenVersion: number = 0;
 
-    public cliquesMaximal: Set<number>[] = [];
+    public cliquesMaximal: SubgraphWithHull[] = [];
     public cliqueVertexCounts: Map<number, number> = new Map<number, number>();
     public cliquesVersion: number = 0;
 
@@ -587,6 +683,68 @@ export default class Graph {
     // subgraph, components, list of vertex degrees
     //////////////////////////////////////////
 
+    public setHulls(list: SubgraphWithHull[]) {
+        // count number of cliques per vertex
+        for(const subgraphWithHull of list) {
+            const points: Vector2[] = [];
+            for(const vId of subgraphWithHull.clique) {
+                const v = this.vertexGet(vId);
+                if(!v) continue;
+                const style = v.style ?? VertexStyleDefault();
+                const radius = (style.radius ?? 14) + 6;
+                points.push(v.position);
+
+                for(let i=0; i<9; ++i) {
+                    points.push(v.position.plus(Vector2.fromAngleAndLength(i * 2 * Math.PI / 9, radius)));
+                }
+            }
+            subgraphWithHull.hull = Vector2.concaveHull(points);
+        }
+    }
+
+    private visiblePanFrom: Vector2 = new Vector2(100,100);
+    private visiblePanTo: Vector2 = new Vector2(100,100);
+    private grid: SpatialGrid = new SpatialGrid();
+    public verticesVisible: Vertex[] = [];
+
+    public visibleUpdateGrid() {
+        this.grid = new SpatialGrid();
+        for(const v of this.vertices.values()) {
+            this.grid.insertOrUpdate(v);
+        }
+    }
+
+    /** sets `vertex.visible` for all vertices overlapping the viewport `from` - `to` */
+    public setVisible(from: Vector2, to: Vector2): void {
+        if(from.minus(this.visiblePanFrom).length() < 100) return;
+
+        this.visiblePanFrom = from;
+        this.visiblePanTo = from;
+
+        const visibleNow = this.grid.query(from, to);
+
+        const visibleIDs = new Set<number>();
+
+        // mark visible
+        for (const v of visibleNow) {
+            if (!v.visible) {
+                v.visible = true;
+                ++v.version;
+            }
+            visibleIDs.add(v.id);
+        }
+
+        // mark previously visible as invisible
+        for (const v of this.verticesVisible) {
+            if (!visibleIDs.has(v.id)) {
+                v.visible = false;
+                ++v.version;
+            }
+        }
+
+        this.verticesVisible = visibleNow;
+    }
+
     /** checks whether this graph contains the vertex IDs */
     public containsVertices(selection: number[]): boolean {
         for(const vid of selection) {
@@ -766,6 +924,11 @@ export default class Graph {
     // vertex/edge: get/add/remove
     //////////////////////////////////////////
 
+    public activeVerticesSet(vertexIDs: number[]) {
+        this.activeVerticesIncrementVersion();
+        this.activeVertices = vertexIDs;
+        this.activeVerticesIncrementVersion();
+    }
     public activeVerticesIncrementVersion() {
         for (const vId of this.activeVertices) {
             const v = this.vertexGet(vId);
@@ -814,6 +977,12 @@ export default class Graph {
         }
 
         this.vertices.set(vertex.id, vertex);
+
+        // add to visible vertices for rendering
+        if(vertex.visible) {
+            this.verticesVisible.push(vertex);
+        }
+
         return vertex;
     }
 
@@ -826,6 +995,13 @@ export default class Graph {
             const v = this.vertexGet(neighborId);
             if(!v) continue;
             v.neighbors.delete(vertex.id);
+        }
+        this.setVisible(this.visiblePanFrom, this.visiblePanTo);
+
+        // remove from visible vertices for rendering
+        if(vertex.visible) {
+            const index = this.verticesVisible.indexOf(vertex);
+            if(index>=0) this.verticesVisible.splice(index, 1);
         }
     }
 
@@ -860,6 +1036,7 @@ export default class Graph {
         graph.id = data.id;
         graph.name = data.name;
         graph.savedLast = data.savedLast;
+        graph.viewData = data.viewData;
 
         for(const from in data.edgeStyle) {
             if(!Object.hasOwn(data.edgeStyle, from)) continue;
@@ -876,7 +1053,8 @@ export default class Graph {
 
         // add vertices
         for (const vertexData of data.vertices) {
-            graph.vertexAdd(Vertex.VertexFromData(vertexData));
+            const v = graph.vertexAdd(Vertex.VertexFromData(vertexData));
+            v.visible = false;
         }
 
         // add edges
@@ -905,6 +1083,7 @@ export default class Graph {
             savedLast: this.savedLast,
             vertices: [],
             edgeStyle: {},
+            viewData: this.viewData,
         };
         for(const [from, map] of this.edgeStyle.entries()) {
             data.edgeStyle[from] = {};
