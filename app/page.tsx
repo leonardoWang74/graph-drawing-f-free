@@ -7,7 +7,7 @@ import Graph, {
     LineStyle,
     LineStyleClone,
     LineStyleDefault,
-    VertexStyleDefault
+    VertexStyleDefault, BoundingVertices
 } from "@/app/data/Graph";
 import {Vertex, VertexStyle, VertexStyleClone} from "@/app/data/Vertex";
 import Vector2 from "@/app/data/Vector2";
@@ -284,6 +284,8 @@ interface VertexDragData {
 interface PropertyData {
     /** also includes a line style for edges */
     vertexStyle: VertexStyle;
+
+    open: boolean;
 }
 
 export function GraphEditor({
@@ -298,7 +300,7 @@ export function GraphEditor({
     const svgRef = useRef<SVGSVGElement | null>(null);
     const worldRef = useRef<SVGGElement | null>(null);
 
-    const [properties, propertiesSet] = useState<PropertyData>({vertexStyle: VertexStyleDefault()});
+    const [properties, propertiesSet] = useState<PropertyData>({vertexStyle: VertexStyleDefault(), open: false});
 
     const [view, viewSet] = useState<ViewData>(graph.viewData ?? {zoom: 1, pan: new Vector2(0, 0), gridSize: 1});
     const [panning, panningSet] = useState<PanningData>();
@@ -543,7 +545,7 @@ export function GraphEditor({
         graph.setHulls(graph.cliquesMaximal);
 
         // update version: updated number of cliques
-        graph.activeVerticesIncrementVersion();
+        graph.incrementVersion(graph.activeVertices);
 
         console.log('found maximal cliques: ', cliquesMaximal.length, ` in time ${duration} ms`)
         updateSet(new Date());
@@ -553,7 +555,7 @@ export function GraphEditor({
     useEffect(() => {
         const onKey = (e: KeyboardEvent) => {
             if (!graph || !graph.active) return;
-            // console.log(e.key, e.ctrlKey, e.shiftKey)
+            // console.log(e.key, e.ctrlKey, e.altKey, e.shiftKey)
 
             // delete currently selected vertices / edges
             if (e.key === "Delete" || e.key === "x") {
@@ -561,18 +563,19 @@ export function GraphEditor({
                 keyboardDeleteSelection(graph);
                 saveDataSave();
             }
-            // clear selection
-            else if (e.key === "Escape") {
-                graph.activeVerticesSet([]);
-                updateSet(new Date());
-            }
-            // export / save
+            // export / save selection
             else if (e.key === "s" || e.key === "S") {
-                if(!EventKeyboardCanFire(e)) return;
-                if (e.ctrlKey && e.shiftKey) {
-                    exportSelection(svgRef.current!, graph, graph.activeVertices);
+                if(!EventKeyboardCanFire(e, true)) return;
+
+                // saved selection
+                if (!e.ctrlKey && !e.shiftKey) {
+                    graph.savedVerticesSet([...graph.activeVertices]);
+                    updateSet(new Date());
                     e.preventDefault();
-                } else if (e.ctrlKey) {
+                }
+                // prevent Ctrl+S save dialogue
+                else if(e.ctrlKey) {
+                    saveDataSave();
                     e.preventDefault();
                 }
             }
@@ -601,6 +604,190 @@ export function GraphEditor({
                 if(!EventKeyboardCanFire(e)) return;
                 if(e.ctrlKey) return;
                 keyboardMaximalCliques(graph);
+                e.preventDefault();
+            }
+            // "A": select all
+            else if (e.key === "a" || e.key === "A") {
+                if(!EventKeyboardCanFire(e, true)) return;
+                if(e.ctrlKey) {
+                    graph.activeVerticesSet(graph.vertices.values().toArray().map(v => v.id));
+                    updateSet(new Date());
+
+                }
+                e.preventDefault();
+            }
+            // "L": align in line
+            else if(e.key === 'l' || e.key === 'L') {
+                if(!EventKeyboardCanFire(e, true)) return;
+                if(graph.activeVertices.length < 2) return;
+                const n = graph.activeVertices.length;
+                let first = graph.vertexGet(graph.activeVertices[0]);
+                let last = graph.vertexGet(graph.activeVertices[n-1]);
+                if(!first || !last) return;
+                const deltaX = (last.position.x - first.position.x) / (n - 1);
+                const deltaY = (last.position.y - first.position.y) / (n - 1);
+                for(let i=0; i<n; ++i) {
+                    const v = graph.vertexGet(graph.activeVertices[i]);
+                    if(!v) continue;
+                    v.position = new Vector2(first.position.x + i * deltaX, first.position.y + i * deltaY);
+                    ++v.version;
+                }
+            }
+            // Arrowkeys: align / move current
+            else if (e.key === "ArrowUp" || e.key === "ArrowDown" || e.key === "ArrowLeft" || e.key === "ArrowRight") {
+                if(!EventKeyboardCanFire(e, true)) return;
+
+                // align
+                if(e.altKey) {
+                    const bounds = graph.getBoundingVerticesSubgraph(graph.savedSelection);
+                    if(!bounds.leftMost || !bounds.rightMost || !bounds.upperMost || !bounds.bottomMost) return;
+
+                    // align to extreme value
+                    let getterBoundFunction: (bounds: BoundingVertices) => Vertex|undefined;
+                    let setterVectorFunction: (bound: Vector2, value: Vector2) => Vector2;
+                    switch (e.key) {
+                        case 'ArrowUp':
+                            getterBoundFunction = (bounds) => bounds.upperMost;
+                            setterVectorFunction = (bound, v) => new Vector2(v.x, bound.y);
+                            break;
+                        case 'ArrowDown':
+                            getterBoundFunction = (bounds) => bounds.bottomMost;
+                            setterVectorFunction = (bound, v) => new Vector2(v.x, bound.y);
+                            break;
+                        case 'ArrowLeft':
+                            getterBoundFunction = (bounds) => bounds.leftMost;
+                            setterVectorFunction = (bound, v) => new Vector2(bound.x, v.y);
+                            break;
+                        case 'ArrowRight':
+                            getterBoundFunction = (bounds) => bounds.rightMost;
+                            setterVectorFunction = (bound, v) => new Vector2(bound.x, v.y);
+                            break;
+                        default:
+                            return;
+                    }
+
+                    // align components to extreme value
+                    if(!e.shiftKey && !e.ctrlKey) {
+                        const bound = getterBoundFunction(bounds);
+                        if(!bound) return;
+
+                        const componentsSelected = graph.getSubgraphAlgorithm(graph.activeVertices).getComponents();
+
+                        // apply aggregate to components
+                        for(const component of componentsSelected) {
+                            // find most extreme vertex
+                            const boundsComponent: BoundingVertices = graph.getBoundingVerticesSubgraph(component.getVertexIDs());
+                            const boundComponent = getterBoundFunction(boundsComponent);
+                            if(!boundComponent) continue;
+
+                            // apply aggregate to most extreme vertex
+                            const positionOld = boundComponent.position;
+                            const positionNew = setterVectorFunction(bound.position, boundComponent.position);
+                            const delta = positionNew.minus(positionOld);
+
+                            // apply position delta to vertices in component
+                            for(const vSub of component.vertices.values()) {
+                                const v = graph.vertexGet(vSub.id);
+                                if(!v) continue;
+                                v.position = v.position.plus(delta);
+                                ++v.version;
+                            }
+                        }
+                    }
+                    // align last selected component to center value
+                    else if(e.shiftKey) {
+                        let boundMinMax: {min: Vertex, max: Vertex}|undefined = undefined;
+                        switch (e.key) {
+                            case 'ArrowUp':
+                            case 'ArrowDown':
+                                boundMinMax = {min: bounds.bottomMost, max: bounds.upperMost};
+                                break;
+                            case 'ArrowLeft':
+                            case 'ArrowRight':
+                                boundMinMax = {min: bounds.leftMost, max: bounds.rightMost};
+                                break;
+                            default:
+                                return;
+                        }
+                        const center = new Vector2(
+                            (bounds.leftMost.position.x + bounds.rightMost.position.x) / 2,
+                            (bounds.bottomMost.position.y + bounds.upperMost.position.y) / 2
+                        );
+
+                        // apply aggregate to selection
+                        // find most extreme vertex
+                        const boundsComponent: BoundingVertices = graph.getBoundingVerticesSubgraph(graph.activeVertices);
+                        if(!boundsComponent.leftMost || !boundsComponent.rightMost || !boundsComponent.upperMost || !boundsComponent.bottomMost) return;
+
+                        // move center of component to center of aggregate
+                        const positionOld = new Vector2(
+                            (boundsComponent.leftMost.position.x + boundsComponent.rightMost.position.x) / 2,
+                            (boundsComponent.bottomMost.position.y + boundsComponent.upperMost.position.y) / 2
+                        );
+                        const positionNew = setterVectorFunction(center, positionOld);
+                        const delta = positionNew.minus(positionOld);
+
+                        // apply position delta to vertices in component
+                        for(const vId of graph.activeVertices) {
+                            const v = graph.vertexGet(vId);
+                            if(!v) continue;
+                            v.position = v.position.plus(delta);
+                            ++v.version;
+                        }
+                    }
+                    // align every vertex to extreme value
+                    /*else if(e.shiftKey) {
+                        const bound = getterBoundFunction(bounds);
+                        if(!bound) return;
+
+                        // apply aggregate to vertices
+                        for(const vId of graph.activeVertices) {
+                            const v = graph.vertexGet(vId);
+                            if(!v) continue;
+                            v.position = setterVectorFunction(bound.position, v.position);
+                            ++v.version;
+                        }
+                    }*/
+                }
+                // move current
+                else {
+                    let distance = 1;
+                    if(e.ctrlKey) {
+                        distance = 0.25;
+                    }
+                    else if(e.shiftKey) {
+                        distance = 10;
+                    }
+
+                    let vector: Vector2;
+                    switch (e.key) {
+                        case 'ArrowUp':
+                            vector = new Vector2(0, -distance);
+                            break;
+                        case 'ArrowDown':
+                            vector = new Vector2(0, distance);
+                            break;
+                        case 'ArrowLeft':
+                            vector = new Vector2(-distance, 0);
+                            break;
+                        case 'ArrowRight':
+                            vector = new Vector2(distance, 0);
+                            break;
+                        default:
+                            return;
+                    }
+
+                    for(const vId of graph.activeVertices) {
+                        const v = graph.vertexGet(vId);
+                        if(!v) continue;
+                        v.position = v.position.plus(vector);
+                        ++v.version;
+                    }
+                }
+
+                graph.setHulls(graph.cliquesMaximal);
+                saveDataSave();
+                updateSet(new Date());
                 e.preventDefault();
             }
         };
@@ -650,7 +837,7 @@ export function GraphEditor({
             } else if (view.zoom < 0.49) {
                 delta = 0.05;
             }
-            const zoomNew = Math.min(2, Math.max(0.05, view.zoom + delta * (zoomIn ? 1 : -1)));
+            const zoomNew = Math.min(3, Math.max(0.05, view.zoom + delta * (zoomIn ? 1 : -1)));
 
             // change pan so that mouse / screen center stays at the same world position
             const rect = svgRef.current!.getBoundingClientRect();
@@ -1259,6 +1446,36 @@ export function GraphEditor({
                         </div>
                     </button>
 
+                    <button className="mr-1 tooltip">
+                        <kbd>A</kbd>
+                        <div className="tooltiptext p-3" style={{width: "400px"}}>
+                            <kbd>Ctrl+A</kbd> Select all vertices.
+                        </div>
+                    </button>
+
+                    <button className="mr-1 tooltip">
+                        <kbd>S</kbd>
+                        <div className="tooltiptext p-3" style={{width: "400px"}}>
+                            <kbd>S</kbd> set this current selection as your <b>saved selection</b>. Other keyboard shortcuts depend on the saved selection.
+                        </div>
+                    </button>
+
+                    <button className="mr-1 tooltip">
+                        <kbd>Up</kbd>
+                        <div className="tooltiptext p-3" style={{width: "400px"}}>
+                            <kbd>Up</kbd>,<kbd>Down</kbd>,<kbd>Left</kbd>,<kbd>Right</kbd> to move selected vertices
+                            up/down/left/right.
+                            <br/><br/>
+                            Use <kbd>Alt</kbd> to align all components in the selection in the direction the key
+                            is pointing at. They will align to the most extreme point in the saved selection.
+
+                            For instance, use <kbd>Alt+Right</kbd> to align the selection components to the right
+                            (the coordinates the most far right vertex in the saved selection is).
+                            Add <kbd>Shift</kbd> to instead align the center of the selection to the center
+                            of the saved selection.
+                        </div>
+                    </button>
+
                     <button className="ml-4 tooltip">
                         <kbd>Q</kbd>
                         <div className="tooltiptext" style={{width: "300px"}}>
@@ -1672,7 +1889,7 @@ const PropertiesDisplay = React.memo((props: {
     useEffect(() => {
         const onKey = (e: KeyboardEvent) => {
             if (!props.graph || !props.graph.active) return;
-            // console.log(e.key, e.ctrlKey, e.shiftKey)
+            console.log(e.key, e.ctrlKey, e.shiftKey)
 
             // "q": properties
             if (e.key === "q" || e.key === "Q") {
@@ -1724,6 +1941,13 @@ const PropertiesDisplay = React.memo((props: {
                 colorOpenSet('textColor');
                 keyboardFocusVertexLabel().then();
                 e.preventDefault();
+            }
+            // clear selection + close vertex text box
+            else if(e.key === 'Escape') {
+                props.graph.activeVerticesSet([]);
+                numberOpenSet(undefined);
+                colorOpenSet(undefined);
+                props.updateGraph();
             }
         };
         window.addEventListener("keydown", onKey);
@@ -1872,7 +2096,8 @@ const CliquesRender = React.memo((props: {
                   strokeLinejoin="round"
                   strokeLinecap="round"
                   strokeDasharray="2,4"
-                  onClick={() => {
+                  onClick={e => {
+                      if(e.shiftKey) return;
                       props.graph.activeVerticesSet(Array.from(clique.clique));
                       props.updateSet(new Date());
                   }}
@@ -1886,7 +2111,8 @@ const CliquesRender = React.memo((props: {
                   strokeLinejoin="round"
                   strokeLinecap="round"
                   strokeDasharray="2,4"
-                  onClick={() => {
+                  onClick={e => {
+                      if(e.shiftKey) return;
                       props.graph.activeVerticesSet(Array.from(clique.clique));
                       props.updateSet(new Date());
                   }}
@@ -1997,13 +2223,13 @@ const VertexRender = React.memo((props: {
 
         v.svg = {
             label: v.label,
-            width: viewBox.width*1.03,
-            height: viewBox.height*1.03,
+            width: viewBox.width*1.12,
+            height: viewBox.height*1.12,
             element,
         };
 
         updateSet(new Date());
-    }, [props.vertex.label]);
+    }, [props.vertex]);
 
     useEffect(() => {
         const v = props.vertex;
@@ -2015,64 +2241,77 @@ const VertexRender = React.memo((props: {
     const v = props.vertex;
 
     const active = props.graph.activeVertices.includes(v.id);
+    const savedSelection = props.graph.savedSelection.includes(v.id);
     const style = v.style ?? VertexStyleDefault();
     const scale = style.textSize / 14;
 
     const cliqueAmount = props.graph.cliqueVertexCounts.get(v.id);
+    const labelEmpty = v.label?.length>0 && v.label.trim().length === 0;
 
     return <>
         <g data-vertex={v.id}
            x={v.position.x} y={v.position.y}
            onMouseDown={e => props.vertexClick(e, v, active)}
         >
-            <circle
+            {savedSelection ? <>
+                <rect
+                    x={v.position.x - (1 / 2 + style.radius)} y={v.position.y - (1 / 2 + style.radius)}
+                    width={1 + 2 * style.radius}
+                    height={1 + 2 * style.radius}
+                    fill={style.bgColor}
+                    stroke={style.lineStyle.color}
+                    strokeWidth={(active ? 1.5 : 0) + (!isNaN(style.lineStyle.weight) ? style.lineStyle.weight : 1)}
+                    strokeDasharray={v.disabled || style.lineStyle.type === "dashed" ? "6,8" : style.lineStyle.type === "dotted" ? "2,4" : undefined}
+                />
+            </> : <circle
                 cx={v.position.x} cy={v.position.y}
                 r={style.radius}
                 fill={style.bgColor}
                 stroke={style.lineStyle.color}
                 strokeWidth={(active ? 1.5 : 0) + (!isNaN(style.lineStyle.weight) ? style.lineStyle.weight : 1)}
                 strokeDasharray={v.disabled || style.lineStyle.type === "dashed" ? "6,8" : style.lineStyle.type === "dotted" ? "2,4" : undefined}
-            />
-            {v.svg ?
-                <g transform={`translate(${v.position.x - scale * v.svg.width / 2}, ${v.position.y - scale * v.svg.height / 2}) scale(${scale})`}>
-                    <rect
-                        data-ui="true"
-                        fill="#ffffff01"
-                        stroke={active ? '#00000080' : undefined}
-                        strokeDasharray={"2,6"}
-                        width={v.svg.width * 1.1}
-                        height={v.svg.height * 1.1}
-                    />
+            />}
+            {v.label?.includes('$') ?
+                (v.svg ?
+                    <g transform={`translate(${v.position.x - scale * v.svg.width / 2}, ${v.position.y - scale * v.svg.height / 2}) scale(${scale})`}>
+                        <rect
+                            data-ui="true"
+                            fill="#ffffff00"
+                            stroke={active ? '#00000080' : undefined}
+                            strokeDasharray={"2,6"}
+                            width={v.svg.width}
+                            height={v.svg.height}
+                        />
 
-                    {v.svg.element}
-                </g> :
+                        {v.svg.element}
+                    </g> : <></>) :
                 <text className="select-none"
                       x={v.position.x} y={v.position.y}
                       fill={style.textColor}
                       fontSize={style.textSize}
-                      fontWeight={active && style.radius<3 ? 'bold' : undefined}
+                      fontWeight={active && style.radius < 3 ? 'bold' : undefined}
                       textAnchor="middle"
                       dominantBaseline="middle"
-            >
-                {v.label ? v.label : v.id}
-            </text>
-        }
-        {cliqueAmount && <>
-            <circle
-                cx={v.position.x} cy={v.position.y - style.radius - 1}
-                r={8}
-                fill={style.bgColor}
-            />
-            <text
-                className="select-none"
-                x={v.position.x} y={v.position.y}
-                    dy={-style.radius-1}
-                    fill={style.textColor}
-                    fontSize={style.textSize}
-                    textAnchor="middle"
-                    dominantBaseline="middle"
                 >
-                    {cliqueAmount}
+                    {v.label ? v.label : v.id}
+                </text>
+            }
+            {cliqueAmount && <>
+                {!labelEmpty && <circle
+                    cx={v.position.x} cy={v.position.y - style.radius - 1}
+                    r={8}
+                    fill={style.bgColor}
+                />}
+                <text
+                    className="select-none"
+                    x={v.position.x} y={v.position.y}
+                        dy={labelEmpty ? 0.75 : -style.radius-1}
+                        fill={style.textColor}
+                        fontSize={style.textSize-3}
+                        textAnchor="middle"
+                        dominantBaseline="middle"
+                    >
+                        {cliqueAmount}
                 </text>
             </>}
         </g>

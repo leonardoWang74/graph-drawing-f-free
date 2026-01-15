@@ -49,6 +49,14 @@ export interface SubgraphWithHull {
     hull: Vector2[];
 }
 
+export interface BoundingVertices {
+    leftMost?: Vertex;
+    rightMost?: Vertex;
+
+    upperMost?: Vertex;
+    bottomMost?: Vertex;
+}
+
 type CellKey = string;
 
 class SpatialGrid {
@@ -149,6 +157,7 @@ export default class Graph {
     public edgeStyle: Map<number, Map<number, LineStyle>> = new Map<number, Map<number, LineStyle>>();
     public edgesForbidden: Map<number, Set<number>> = new Map<number, Set<number>>();
 
+    public savedSelection: number[] = [];
     public activeVertices: number[] = [];
     public forbiddenInduced: number[][] = [];
     public forbiddenVersion: number = 0;
@@ -683,6 +692,23 @@ export default class Graph {
     // subgraph, components, list of vertex degrees
     //////////////////////////////////////////
 
+    public getBoundingVerticesSubgraph(vertexIDs: number[]): BoundingVertices {
+        const bound: BoundingVertices = {};
+
+        for(const vId of vertexIDs) {
+            const v = this.vertexGet(vId);
+            if(!v) continue;
+
+            if(!bound.leftMost || v.position.x < bound.leftMost.position.x) bound.leftMost = v;
+            if(!bound.rightMost || v.position.x > bound.rightMost.position.x) bound.rightMost = v;
+
+            if(!bound.upperMost || v.position.y < bound.upperMost.position.y) bound.upperMost = v;
+            if(!bound.bottomMost || v.position.y > bound.bottomMost.position.y) bound.bottomMost = v;
+        }
+
+        return bound;
+    }
+
     public setHulls(list: SubgraphWithHull[]) {
         // count number of cliques per vertex
         for(const subgraphWithHull of list) {
@@ -715,8 +741,8 @@ export default class Graph {
     }
 
     /** sets `vertex.visible` for all vertices overlapping the viewport `from` - `to` */
-    public setVisible(from: Vector2, to: Vector2): void {
-        if(from.minus(this.visiblePanFrom).length() < 100) return;
+    public setVisible(from: Vector2, to: Vector2, forceUpdate = false): void {
+        if(!forceUpdate && from.minus(this.visiblePanFrom).length() < 15) return;
 
         this.visiblePanFrom = from;
         this.visiblePanTo = from;
@@ -764,11 +790,18 @@ export default class Graph {
 
     /** get the maximally connected components of this graph */
     public getComponents(): Graph[] {
+        return this.getComponentsOfVertices(this.getVertexIDs());
+    }
+
+    /** get the maximally connected components that are connected to the given vertices */
+    public getComponentsOfVertices(vertexIDs: number[]): Graph[] {
         const components: Graph[] = [];
 
         const found: Set<number> = new Set<number>();
-        for(const vertex of this.vertices.values()) {
-            if(found.has(vertex.id)) continue;
+        for(const vId of vertexIDs) {
+            if(found.has(vId)) continue;
+            const vertex = this.vertexGet(vId);
+            if(!vertex) continue;
 
             // component IDs
             const ids: number[] = [];
@@ -924,13 +957,25 @@ export default class Graph {
     // vertex/edge: get/add/remove
     //////////////////////////////////////////
 
-    public activeVerticesSet(vertexIDs: number[]) {
-        this.activeVerticesIncrementVersion();
-        this.activeVertices = vertexIDs;
-        this.activeVerticesIncrementVersion();
+    public getVertexIDs() {
+        return this.getVerticesAsArray().map(v => v.id);
     }
-    public activeVerticesIncrementVersion() {
-        for (const vId of this.activeVertices) {
+    public getVerticesAsArray() {
+        return this.vertices.values().toArray();
+    }
+
+    public savedVerticesSet(vertexIDs: number[]) {
+        this.incrementVersion(this.savedSelection);
+        this.savedSelection = vertexIDs;
+        this.incrementVersion(this.savedSelection);
+    }
+    public activeVerticesSet(vertexIDs: number[]) {
+        this.incrementVersion(this.activeVertices);
+        this.activeVertices = vertexIDs;
+        this.incrementVersion(this.activeVertices);
+    }
+    public incrementVersion(vertexIDs: number[]) {
+        for (const vId of vertexIDs) {
             const v = this.vertexGet(vId);
             if (!v) continue;
             ++v.version;
@@ -996,7 +1041,7 @@ export default class Graph {
             if(!v) continue;
             v.neighbors.delete(vertex.id);
         }
-        this.setVisible(this.visiblePanFrom, this.visiblePanTo);
+        this.setVisible(this.visiblePanFrom, this.visiblePanTo, true);
 
         // remove from visible vertices for rendering
         if(vertex.visible) {
