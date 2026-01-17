@@ -32,6 +32,22 @@ export default class Vector2 {
     public length(): number {
         return Math.hypot(this.x, this.y);
     }
+    public clone(): Vector2 {
+        return new Vector2(this.x, this.y);
+    }
+    public abs(): Vector2 {
+        return new Vector2(Math.abs(this.x), Math.abs(this.y));
+    }
+
+    /** returns the distance of `current` to a line starting in the `initial` point with slant `angleRadians` */
+    public static distancePointToLine(initial: Vector2, current: Vector2, angleRadians: number): number {
+        const dx = current.x - initial.x;
+        const dy = current.y - initial.y;
+
+        return Math.abs(
+            dx * Math.sin(angleRadians) - dy * Math.cos(angleRadians)
+        );
+    }
 
     // https://www.geeksforgeeks.org/dsa/convex-hull-monotone-chain-algorithm/
     // retrieved 13.01.2026

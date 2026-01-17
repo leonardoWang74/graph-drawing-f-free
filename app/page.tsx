@@ -276,9 +276,20 @@ export interface ViewData {
 }
 
 interface VertexDragData {
+    positionStart: Vector2;
+
+    /** where the mouse position would place the vertex (if not for the align lines) */
+    positionNow: Vector2;
+
     mouseStartOffset?: Vector2;
     vertex: number;
-    ctrlKey: boolean;
+    /** pressed ctrl before dragging, only move this vertex instead of whole selection  */
+    ctrlKeyInit: boolean;
+
+    /** shift DURING dragging, align to angle lines */
+    shiftKeyNow: boolean;
+    /** ctrl DURING dragging, align to other visible vertices */
+    ctrlKeyNow: boolean;
 }
 
 interface PropertyData {
@@ -363,6 +374,8 @@ export function GraphEditor({
                 graph.vertexRemove(v);
                 ++v.version;
             }
+            graph.visibleUpdateGrid();
+            graph.setVisible();
             graph.activeVertices = [];
             updateSet(new Date());
         }
@@ -1060,6 +1073,25 @@ export function GraphEditor({
         }
     }, [view, getMousePositionScreen, graph]);
 
+
+    // keyboard functions depending on dragVertex
+    useEffect(() => {
+        const onKey = (e: KeyboardEvent) => {
+            if (!graph || !graph.active || !dragVertex) return;
+            // console.log(e.key, e.ctrlKey, e.altKey, e.shiftKey)
+
+            dragVertex.shiftKeyNow = e.shiftKey;
+            dragVertex.ctrlKeyNow = e.ctrlKey;
+            updateSet(new Date());
+        };
+        window.addEventListener("keydown", onKey);
+        window.addEventListener("keyup", onKey);
+        return () => {
+            window.removeEventListener("keydown", onKey);
+            window.removeEventListener("keyup", onKey);
+        }
+    }, [graph, dragVertex]);
+
     const onMouseMove = useCallback((e: React.MouseEvent) => {
         if (!graph) return;
 
@@ -1124,6 +1156,9 @@ export function GraphEditor({
 
         // move active vertex
         if (dragVertex) {
+            dragVertex.shiftKeyNow = e.shiftKey;
+            dragVertex.ctrlKeyNow = e.ctrlKey;
+
             const v = graph.vertexGet(dragVertex.vertex);
             if (v) {
                 const mouseWorld = getMousePositionWorld(e);
@@ -1131,10 +1166,70 @@ export function GraphEditor({
                     dragVertex.mouseStartOffset = v.position.minus(mouseWorld);
                 }
 
-                const pos = mouseWorld.plus(dragVertex.mouseStartOffset).grid(view.gridSize);
+                const posOriginal = mouseWorld.plus(dragVertex.mouseStartOffset).grid(view.gridSize);
+                dragVertex.positionNow = posOriginal.clone();
+
+                let pos = posOriginal;
+                let posShift = posOriginal;
+                let posCtrl = posOriginal;
+
+                // holding shift: align to directions
+                if(e.shiftKey) {
+                    let angleBest = 0;
+                    let angleBestDistance = 9999999;
+
+                    const angleCount = 8;
+                    const delta = 2*Math.PI / angleCount; // 15 degree
+                    let angle = 0;
+                    for(let i=0; i<angleCount; ++i) {
+                        let dist = Vector2.distancePointToLine(dragVertex.positionStart, pos, angle);
+                        if(dist < angleBestDistance) {
+                            angleBestDistance = dist;
+                            angleBest = angle;
+                        }
+
+                        angle += delta;
+                    }
+
+                    // align to line
+                    const distance = pos.minus(dragVertex.positionStart).length();
+
+                    // plus / minus the angle could be correct - take nearest one
+                    const plus = dragVertex.positionStart.plus(Vector2.fromAngleAndLength(angleBest, distance));
+                    const minus  = dragVertex.positionStart.minus(Vector2.fromAngleAndLength(angleBest, distance));
+                    posShift = plus.minus(pos).length() < minus.minus(pos).length() ? plus : minus;
+                    pos = posShift;
+                }
+
+                // holding ctrl: align to other vertices
+                if(e.ctrlKey) {
+                    // for x, y separately - find closest to posOriginal.x / posOriginal.y
+                    let closestDistanceXandY = new Vector2(15, 15);
+                    let closestXandY = posOriginal;
+                    let closestVertexX = undefined;
+                    let closestVertexY = undefined;
+                    for(const v of graph.verticesVisible) {
+                        if(v.id === dragVertex.vertex) continue;
+                        const delta = v.position.minus(posOriginal).abs();
+
+                        if(delta.x < closestDistanceXandY.x) {
+                            closestDistanceXandY.x = delta.x;
+                            closestXandY.x = v.position.x;
+                            closestVertexX = v;
+                        }
+
+                        if(delta.y < closestDistanceXandY.y) {
+                            closestDistanceXandY.y = delta.y;
+                            closestXandY.y = v.position.y;
+                            closestVertexY = v;
+                        }
+                    }
+                    posCtrl = closestXandY;
+                    pos = posCtrl;
+                }
 
                 // move other selected vertices relative to v's current position
-                if (!dragVertex.ctrlKey) {
+                if (!dragVertex.ctrlKeyInit) {
                     for (const vId of graph.activeVertices) {
                         const vertex = graph.vertexGet(vId);
                         if (!vertex || vertex.id === v.id) continue;
@@ -1218,7 +1313,16 @@ export function GraphEditor({
             if (!active) {
                 graph.activeVerticesSet([v.id]);
             }
-            dragVertexSet({vertex: v.id, mouseStartOffset: undefined, ctrlKey: e.ctrlKey});
+            dragVertexSet({
+                vertex: v.id,
+                mouseStartOffset: undefined,
+                ctrlKeyInit: e.ctrlKey,
+                positionStart: v.position.clone(),
+                positionNow: v.position.clone(),
+
+                shiftKeyNow: e.shiftKey,
+                ctrlKeyNow: e.ctrlKey,
+            });
         }
 
         e.stopPropagation();
@@ -1325,6 +1429,55 @@ export function GraphEditor({
             }
         }
         return lines;
+    }, []);
+
+    const renderDragVertex = useCallback((graph: Graph, dragVertex: VertexDragData) => {
+        const elements = [];
+
+        if(dragVertex.shiftKeyNow) {
+            const n = 8;
+            const delta = 2 * Math.PI / n;
+            let angle = 0;
+            for(let i=0; i<n; ++i) {
+                const posTo = dragVertex.positionStart.plus(Vector2.fromAngleAndLength(angle, 9999));
+                elements.push(<line
+                    key={angle}
+                    data-ui="true"
+                    x1={dragVertex.positionStart.x} y1={dragVertex.positionStart.y}
+                    x2={posTo.x} y2={posTo.y}
+                    stroke={'orange'}
+                    strokeWidth={1}
+                    strokeDasharray={"6,4"}
+                    pointerEvents="none"
+                />)
+                angle += delta;
+            }
+        }
+
+        if(dragVertex.shiftKeyNow || dragVertex.ctrlKeyNow) {
+            elements.push(<circle
+                key="dragv"
+                data-ui="true"
+                cx={dragVertex.positionNow.x} cy={dragVertex.positionNow.y}
+                r={8}
+                stroke="orange"
+                strokeWidth={1}
+                fill="#ffffff00"
+                pointerEvents="none"
+            />)
+            /*elements.push(<line
+                key="dragv-line1"
+                data-ui="true"
+                x1={dragVertex.positionNow.x} y1={dragVertex.positionNow.y}
+                x2={posTo.x} y2={posTo.y}
+                stroke={'orange'}
+                strokeWidth={1}
+                strokeDasharray={"6,4"}
+                pointerEvents="none"
+            />)*/
+        }
+
+        return elements;
     }, []);
 
     let overlapping = undefined;
@@ -1511,6 +1664,7 @@ export function GraphEditor({
                         {renderEdges(graph)}
                         {graph.verticesVisible.map(v =>
                             <VertexRender key={v.id} graph={graph} vertex={v} version={v.version} vertexClick={vertexClick}/>)}
+                        {dragVertex && renderDragVertex(graph, dragVertex)}
                     </g>
 
                     {/* mouse position */ <text

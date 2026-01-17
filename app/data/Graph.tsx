@@ -741,13 +741,15 @@ export default class Graph {
     }
 
     /** sets `vertex.visible` for all vertices overlapping the viewport `from` - `to` */
-    public setVisible(from: Vector2, to: Vector2, forceUpdate = false): void {
-        if(!forceUpdate && from.minus(this.visiblePanFrom).length() < 15) return;
+    public setVisible(from?: Vector2, to?: Vector2, forceUpdate = false): void {
+        if(from && to) {
+            if(!forceUpdate && from.minus(this.visiblePanFrom).length() < 15) return;
 
-        this.visiblePanFrom = from;
-        this.visiblePanTo = from;
+            this.visiblePanFrom = from;
+            this.visiblePanTo = to;
+        }
 
-        const visibleNow = this.grid.query(from, to);
+        const visibleNow = this.grid.query(this.visiblePanFrom, this.visiblePanTo);
 
         const visibleIDs = new Set<number>();
 
@@ -913,11 +915,9 @@ export default class Graph {
                 this.edgeAdd(from, to);
 
                 // copy edge style
-                const style = subgraph.edgeStyle.get(fromOriginal.id)?.get(toOriginal);
-                if(style) {
-                    if (!this.edgeStyle.has(from.id)) this.edgeStyle.set(from.id, new Map<number, LineStyle>());
-                    this.edgeStyle.get(from.id)?.set(to.id, LineStyleClone(style));
-                }
+                const style = subgraph.edgeStyle.get(fromOriginal.id)?.get(toOriginal) ?? LineStyleDefault();
+                if (!this.edgeStyle.has(from.id)) this.edgeStyle.set(from.id, new Map<number, LineStyle>());
+                this.edgeStyle.get(from.id)?.set(to.id, LineStyleClone(style));
             }
         }
 
