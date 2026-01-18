@@ -34,6 +34,22 @@ export function LineStyleDefault(): LineStyle {
     };
 }
 
+export function LineStyleEdgeAdded(): LineStyle {
+    return {
+        color: "#00cc00",
+        weight: 3,
+        type: "solid"
+    };
+}
+
+export function LineStyleEdgeRemoved(): LineStyle {
+    return {
+        color: "#ff0000",
+        weight: 3,
+        type: "dashed"
+    };
+}
+
 export function VertexStyleDefault(): VertexStyle {
     return {
         radius: 18,
@@ -145,6 +161,11 @@ class SpatialGrid {
     }
 }
 
+interface CliqueWithIndex {
+    index: number;
+    clique: Set<number>;
+}
+
 export default class Graph {
     public id: number;
     public name: string = 'A graph';
@@ -166,10 +187,367 @@ export default class Graph {
     public cliqueVertexCounts: Map<number, number> = new Map<number, number>();
     public cliquesVersion: number = 0;
 
+    public edgeAdds: Vector2[] = [];
+    public edgeRemoves: Vector2[] = [];
+
     //////////////////////////////////////////
     // region complex functions
     // list induced subgraphs, get degeneracy, find maximal cliques
     //////////////////////////////////////////
+
+    private static overlappingForbiddenCopy(forbidden: Map<number, Map<number, boolean>>|undefined): Map<number, Map<number, boolean>> {
+        const forbiddenCopy: Map<number, Map<number, boolean>> = new Map<number, Map<number, boolean>>();
+        if(!forbidden) return forbiddenCopy;
+
+        for(const [from, map] of forbidden.entries()) {
+            forbiddenCopy.set(from, new Map<number, boolean>());
+            const mapCopy = forbiddenCopy.get(from)!;
+            for(const [to, value] of map.entries()) {
+                mapCopy.set(to, value);
+            }
+        }
+        return forbiddenCopy;
+    }
+
+    /** forbidden is a map of {vertexIdFrom (smaller ID): { vertexIdTo: value } } with value being TRUE if permanent and FALSE if forbidden */
+    private *overlappingSolutions(
+        s: number,
+        k: number,
+        forbidden: Map<number, Map<number, boolean>>|undefined = undefined
+    ): Generator<Graph> {
+        // initial call
+        if(forbidden === undefined) {
+            forbidden = new Map<number, Map<number, boolean>>();
+            this.edgeAdds = [];
+            this.edgeRemoves = [];
+        }
+
+        const maximalCliques = this.getMaximalCliques();
+
+        /** count of cliques overlapping vertex. smallest number of cliques > s */
+        let vertexCount = s * this.n();
+        /** vertex with count of cliques */
+        let vertexCandidate: Vertex | undefined = undefined;
+
+        /** max count of cliques overlapping vertex */
+        let maxCount = 0;
+
+        const vertexCliques: Map<number, CliqueWithIndex[]> = new Map<number, CliqueWithIndex[]>();
+
+        // count number of maximal cliques per vertex
+        for(let i=0; i<maximalCliques.length; ++i) {
+            const clique = maximalCliques[i];
+
+            for(const vId of clique) {
+                const v = this.vertexGet(vId)!;
+
+                // add clique to list
+                if(!vertexCliques.has(vId)) vertexCliques.set(vId, []);
+                const list = vertexCliques.get(vId)!;
+
+                list.push({clique: clique, index: i});
+
+                // set best vertex
+                if(list.length > s && list.length < vertexCount) {
+                    vertexCount = list.length;
+                    vertexCandidate = v;
+                }
+
+                // count max
+                if(list.length > maxCount) {
+                    maxCount = list.length;
+                }
+            }
+        }
+
+        // no vertex in more than s cliques: no edits needed
+        if(maxCount <= s) {
+            yield this;
+            return;
+        }
+
+        if(!vertexCandidate) return;
+        const vertex = vertexCandidate;
+
+        // some vertex in >k cliques - cannot solve (?)
+        /*if(maxCount > k) {
+            return;
+        }*/
+
+        // otherwise: branch on possible merges / removals
+        const cliques = vertexCliques.get(vertex.id)!;
+        for(let i=0; i<cliques.length; ++i) {
+            const clique = cliques[i];
+
+            /////////////////////////////////////////////////
+            // merge pairs of cliques
+            for(let j=i+1; j<cliques.length; ++j) {
+                // copy graph & forbidden for each branch
+                const graph = this.cloneAlgorithm();
+                graph.edgeAdds = [...this.edgeAdds];
+                graph.edgeRemoves = [...this.edgeRemoves];
+                const forbiddenCopy = Graph.overlappingForbiddenCopy(forbidden);
+
+                const clique2 = cliques[j];
+
+                // need to only add edges between vertex pairs not overlapping both cliques = symmetrical difference
+                const symmVertices = Array.from(clique.clique.symmetricDifference(clique2.clique));
+
+                /** if the edits contain a forbidden edge */
+                let containsForbidden = false;
+
+                let cost = 0;
+
+                // add all edges in-between
+                for(let vi=0; vi<symmVertices.length; ++vi) {
+                    for(let vj=vi+1; vj<symmVertices.length; ++vj) {
+                        const vertexI = graph.vertexGet( symmVertices[vi] )!;
+                        const vertexJ = graph.vertexGet( symmVertices[vj] )!;
+
+                        const [fromId, toId] = vertexI.id < vertexJ.id ? [vertexI.id, vertexJ.id] : [vertexJ.id, vertexI.id];
+
+                        // check if to-add edge is forbidden
+                        if(forbidden!.get(fromId)?.get(toId) === false) {
+                            containsForbidden = true;
+                            vi=symmVertices.length;
+                            break;
+                        }
+
+                        // edge already exists in the graph (cannot happen since using the symmetric difference)
+                        if(graph.edgeHas(vertexI, vertexJ)) continue;
+
+                        ++cost;
+                        graph.edgeAdds.push(new Vector2(fromId, toId));
+                        graph.edgeAdd(vertexI, vertexJ);
+
+                        // update forbidden
+                        if(!forbiddenCopy.has(fromId)) forbiddenCopy.set(fromId, new Map<number, boolean>());
+                        forbiddenCopy.get(fromId)!.set(toId, true);
+                    }
+                }
+
+                // contains a forbidden edit - do not branch
+                if(containsForbidden) continue;
+
+                // did nothing - do not branch
+                if(cost === 0) continue;
+
+                // cost too high - do not branch
+                if(cost > k) continue;
+
+                yield* graph.overlappingSolutions(s, k-cost, forbiddenCopy);
+            }
+
+            /////////////////////////////////////////////////
+            // remove from clique
+            if(!vertex) return;
+
+            // find edges not in other cliques: get all edges in clique then remove overlapping ones
+            const edgesNotInOtherCliques: Map<number, Set<number>> = new Map<number, Set<number>>();
+            for(const fromId of clique.clique) {
+                for(const toId of clique.clique) {
+                    if(fromId >= toId) continue;
+                    if(!edgesNotInOtherCliques.has(fromId)) edgesNotInOtherCliques.set(fromId, new Set<number>());
+                    edgesNotInOtherCliques.get(fromId)!.add(toId);
+                }
+            }
+            // remove overlapping edges
+            for(let j=0; j<maximalCliques.length; ++j) {
+                // do not remove edges of the same clique
+                if(clique.index === j) continue;
+                const clique2 = maximalCliques[j];
+
+                for(const fromId of clique2) {
+                    for(const toId of clique2) {
+                        if(fromId >= toId) continue;
+                        edgesNotInOtherCliques.get(fromId)?.delete(toId);
+                    }
+                }
+            }
+
+            // copy graph & forbidden for each branch
+            const graph = this.cloneAlgorithm();
+            graph.edgeAdds = [...this.edgeAdds];
+            graph.edgeRemoves = [...this.edgeRemoves];
+            const forbiddenCopy = Graph.overlappingForbiddenCopy(forbidden);
+
+            // remove edges adjacent to `vertex`
+            let cost = 0;
+            let containsForbidden = false;
+            for(const [fromId, toIdSet] of edgesNotInOtherCliques.entries()) {
+                // filter edgesNotInOtherCliques to only edges adjacent to `vertex`.
+                // Cases:
+                // 1. fromId < vertex.id -> check neighbors.has(vertex.id), if TRUE then remove edge
+                // 2. fromId === vertex.id -> remove all in toIdSet
+                // 3. fromId > vertex.id -> toIdSet cannot contain vertex.id
+                if(fromId > vertex.id) continue;
+
+                if(fromId < vertex.id) {
+                    if(!toIdSet.has(vertex.id)) continue;
+                    const from = graph.vertexGet(fromId)!;
+                    const to = graph.vertexGet(vertex.id)!;
+                    const toId = vertex.id;
+
+                    // check if to-removed edge is fixed
+                    if(forbidden!.get(fromId)?.get(toId) === true) {
+                        containsForbidden = true;
+                        break;
+                    }
+
+                    ++cost;
+                    graph.edgeRemoves.push(new Vector2(fromId, toId));
+                    graph.edgeRemove(from, to);
+
+                    // update forbidden
+                    if(!forbiddenCopy.has(fromId)) forbiddenCopy.set(fromId, new Map<number, boolean>());
+                    forbiddenCopy.get(fromId)!.set(toId, false);
+                }
+                else if(fromId === vertex.id) {
+                    for(const toId of toIdSet) {
+                        const from = graph.vertexGet(vertex.id)!;
+                        const to = graph.vertexGet(toId)!;
+
+                        // check if to-removed edge is fixed
+                        if(forbidden!.get(fromId)?.get(toId) === true) {
+                            containsForbidden = true;
+                            break;
+                        }
+
+                        ++cost;
+                        graph.edgeRemoves.push(new Vector2(fromId, toId));
+                        graph.edgeRemove(from, to);
+
+                        // update forbidden
+                        if(!forbiddenCopy.has(fromId)) forbiddenCopy.set(fromId, new Map<number, boolean>());
+                        forbiddenCopy.get(fromId)!.set(toId, false);
+                    }
+                }
+            }
+
+            // contains fixed edges: do not branch
+            if(containsForbidden) continue;
+
+            // cost too high: do not branch
+            if(cost > k) continue;
+
+            // removed at least one edge
+            if(cost > 0) {
+                yield* graph.overlappingSolutions(s, k-cost, forbiddenCopy);
+                continue;
+            }
+
+            // removed no edge - try to remove the whole clique
+            // all variables are as initialized (cost = 0, containsForbidden=false) since no edge was removed
+            for(const [fromId, toIdSet] of edgesNotInOtherCliques.entries()) {
+                for(const toId of toIdSet) {
+                    const from = graph.vertexGet(fromId)!;
+                    const to = graph.vertexGet(toId)!;
+
+                    // check if to-removed edge is fixed
+                    if(forbidden!.get(fromId)?.get(toId) === true) {
+                        containsForbidden = true;
+                        break;
+                    }
+
+                    ++cost;
+                    graph.edgeRemoves.push(new Vector2(fromId, toId));
+                    graph.edgeRemove(from, to);
+
+                    // update forbidden
+                    if(!forbiddenCopy.has(fromId)) forbiddenCopy.set(fromId, new Map<number, boolean>());
+                    forbiddenCopy.get(fromId)!.set(toId, false);
+                }
+            }
+
+            // contains fixed edges: do not branch
+            if(containsForbidden) continue;
+
+            // cost too high: do not branch
+            if(cost > k) continue;
+
+            // removed at least one edge
+            if(cost > 0) {
+                yield* graph.overlappingSolutions(s, k-cost, forbiddenCopy);
+                continue;
+            }
+
+            // did nothing: remove edges not overlapping other overlapping cliques
+            edgesNotInOtherCliques.clear();
+            for(const fromId of clique.clique) {
+                for(const toId of clique.clique) {
+                    if(fromId >= toId) continue;
+                    if(!edgesNotInOtherCliques.has(fromId)) edgesNotInOtherCliques.set(fromId, new Set<number>());
+                    edgesNotInOtherCliques.get(fromId)!.add(toId);
+                }
+            }
+            // remove overlapping edges
+            for(let j=0; j<cliques.length; ++j) {
+                // do not remove edges of the same clique
+                if(clique.index === j) continue;
+                const clique2 = cliques[j];
+
+                for(const fromId of clique2.clique) {
+                    for(const toId of clique2.clique) {
+                        if(fromId >= toId) continue;
+                        edgesNotInOtherCliques.get(fromId)?.delete(toId);
+                    }
+                }
+            }
+
+            // removed no edge - try to remove the whole clique
+            // all variables are as initialized (cost = 0, containsForbidden=false) since no edge was removed
+            for(const [fromId, toIdSet] of edgesNotInOtherCliques.entries()) {
+                for(const toId of toIdSet) {
+                    const from = graph.vertexGet(fromId)!;
+                    const to = graph.vertexGet(toId)!;
+
+                    // check if to-removed edge is fixed
+                    if(forbidden!.get(fromId)?.get(toId) === true) {
+                        containsForbidden = true;
+                        break;
+                    }
+
+                    ++cost;
+                    graph.edgeRemoves.push(new Vector2(fromId, toId));
+                    graph.edgeRemove(from, to);
+
+                    // update forbidden
+                    if(!forbiddenCopy.has(fromId)) forbiddenCopy.set(fromId, new Map<number, boolean>());
+                    forbiddenCopy.get(fromId)!.set(toId, false);
+                }
+            }
+
+            // contains fixed edges: do not branch
+            if(containsForbidden) continue;
+
+            // cost too high: do not branch
+            if(cost > k) continue;
+
+            // removed at least one edge
+            if(cost > 0) {
+                yield* graph.overlappingSolutions(s, k-cost, forbiddenCopy);
+            }
+        }
+    }
+
+    /** enumerate solutions for s-overlapping cluster editing */
+    public overlappingClusterEditingEnumerate(s: number, k: number): Graph[] {
+        const list: Graph[] = [];
+        for(const solution of this.overlappingSolutions(s, k)) {
+            list.push(solution);
+        }
+        return list;
+    }
+
+    /** enumerate solutions for s-overlapping cluster editing */
+    public overlappingClusterEditingSolution(s: number, k: number): Graph|undefined {
+        const generator = this.overlappingSolutions(s, k);
+
+        const result = generator.next();
+        if(result) return result.value;
+
+        return undefined;
+    }
 
     /** find maximal cliques in the graph */
     public getMaximalCliques(): Set<number>[] {
@@ -193,7 +571,7 @@ export default class Graph {
         const list: Set<number>[] = [];
 
         const degeneracyInfo = this.getDegeneracyOrdering();
-        console.log('degeneracy of '+this.vertices.values().map(v => v.id).toArray().join(',')+ ": ", degeneracyInfo.degeneracy)
+        // console.log('degeneracy of '+this.vertices.values().map(v => v.id).toArray().join(',')+ ": ", degeneracyInfo.degeneracy)
 
         // for each vertex vi in a degeneracy ordering $v_0, v_1, v_2, \dots$ of $(V,E)$ do
         for(let i = 0; i < degeneracyInfo.ordering.length; ++i) {
@@ -692,6 +1070,40 @@ export default class Graph {
     // subgraph, components, list of vertex degrees
     //////////////////////////////////////////
 
+    /** set edge styles based on this.eggeAdds and this.edgeRemove */
+    public styleEdgesOnAddedAndRemoved() {
+        for(const edge of this.edgeAdds) {
+            const [from, to] = [edge.x, edge.y];
+            if(!this.edgeStyle.has(from)) this.edgeStyle.set(from, new Map<number, LineStyle>());
+            this.edgeStyle.get(from)!.set(to, LineStyleEdgeAdded());
+        }
+
+        for(const edge of this.edgeRemoves) {
+            const [from, to] = [edge.x, edge.y];
+            this.vertexGet(from)?.neighborsRemoved.add(to);
+        }
+    }
+
+    /** this = subgraph, copy info (label), styles of parent `graph` */
+    public subgraphCopyInfo(graph: Graph) {
+        for(const v of this.vertices.values()) {
+            const vParent = graph.vertexGet(v.id);
+            if(!vParent) continue;
+            v.position = vParent.position;
+            v.label = vParent.label;
+            v.style = VertexStyleClone(vParent.style);
+
+            for(const nId of v.neighbors) {
+                if(v.id >= nId) continue;
+                const lineStyle = graph.edgeStyle.get(v.id)?.get(nId);
+                if(!lineStyle) continue;
+
+                if(!this.edgeStyle.has(v.id)) this.edgeStyle.set(v.id, new Map<number, LineStyle>());
+                this.edgeStyle.get(v.id)!.set(nId, LineStyleClone(lineStyle));
+            }
+        }
+    }
+
     public getBoundingVerticesSubgraph(vertexIDs: number[]): BoundingVertices {
         const bound: BoundingVertices = {};
 
@@ -847,6 +1259,15 @@ export default class Graph {
         return this.getSubgraph(nonDisabled);
     }
 
+    /** get a clone (new graph copy). Creates new vertices with the same IDs (doesn't use the same vertex objects) */
+    public cloneAlgorithm(): Graph {
+        const graph = new Graph();
+        for(const vertex of this.vertices.values()) {
+            graph.vertexAdd(vertex.cloneAlgorithm());
+        }
+        return graph;
+    }
+
     /** get a subgraph (reduced set of vertices, with the same edges). Creates new vertices with the same IDs (doesn't use the same vertex objects) */
     public getSubgraphAlgorithm(vertices: number[]): Graph {
         const graph = new Graph();
@@ -918,6 +1339,16 @@ export default class Graph {
                 const style = subgraph.edgeStyle.get(fromOriginal.id)?.get(toOriginal) ?? LineStyleDefault();
                 if (!this.edgeStyle.has(from.id)) this.edgeStyle.set(from.id, new Map<number, LineStyle>());
                 this.edgeStyle.get(from.id)?.set(to.id, LineStyleClone(style));
+            }
+
+            for (const toOriginal of fromOriginal.neighborsRemoved) {
+                if(fromOriginal.id >= toOriginal) continue;
+
+                const from = this.vertexGet(bijection.get(fromOriginal.id) ?? -1);
+                const to = this.vertexGet(bijection.get(toOriginal) ?? -1);
+                if(!from || !to) continue;
+
+                from.neighborsRemoved.add(to.id);
             }
         }
 
@@ -1112,6 +1543,10 @@ export default class Graph {
                 if (!to) continue;
 
                 graph.edgeAdd(from, to);
+            }
+
+            if(v.neighborsRemoved) for (const neighborId of v.neighborsRemoved) {
+                from.neighborsRemoved.add(neighborId);
             }
         }
 

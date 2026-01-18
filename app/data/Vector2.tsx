@@ -38,6 +38,12 @@ export default class Vector2 {
     public abs(): Vector2 {
         return new Vector2(Math.abs(this.x), Math.abs(this.y));
     }
+    public equals(other: Vector2): boolean {
+        return Vector2.equalsStatic(this, other);
+    }
+    public static equalsStatic(a: Vector2, b: Vector2): boolean {
+        return a.x===b.x && a.y===b.y;
+    }
 
     /** returns the distance of `current` to a line starting in the `initial` point with slant `angleRadians` */
     public static distancePointToLine(initial: Vector2, current: Vector2, angleRadians: number): number {

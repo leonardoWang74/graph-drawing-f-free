@@ -7,7 +7,7 @@ import Graph, {
     LineStyle,
     LineStyleClone,
     LineStyleDefault,
-    VertexStyleDefault, BoundingVertices
+    VertexStyleDefault, BoundingVertices, LineStyleEdgeRemoved
 } from "@/app/data/Graph";
 import {Vertex, VertexStyle, VertexStyleClone} from "@/app/data/Vertex";
 import Vector2 from "@/app/data/Vector2";
@@ -298,6 +298,9 @@ interface PropertyData {
 
     open: boolean;
 }
+
+const zoomThresholdVertices = 0.41;
+const zoomThresholdNoEdges = 0.21;
 
 export function GraphEditor({
                                 windowType,
@@ -619,6 +622,43 @@ export function GraphEditor({
                 keyboardMaximalCliques(graph);
                 e.preventDefault();
             }
+            // "O": find maximal cliques
+            else if (e.key === "o" || e.key === "O") {
+                if(!EventKeyboardCanFire(e)) return;
+                if(e.ctrlKey) return;
+
+                const selectedGraph = graph.getSubgraphAlgorithm(graph.activeVertices);
+
+                const boundingBox = selectedGraph.getBoundingVerticesSubgraph(graph.activeVertices);
+                const center = new Vector2(
+                    (boundingBox.leftMost?.position.x + boundingBox.rightMost?.position.x) / 2,
+                    (boundingBox.upperMost?.position.y + boundingBox.bottomMost?.position.y) / 2
+                );
+                const width = boundingBox.rightMost?.position.x - boundingBox.leftMost?.position.x
+
+                const now = new Date();
+                for(let k=0; k<50; ++k) {
+                    const solutionList = selectedGraph.overlappingClusterEditingEnumerate(2, k);
+                    if(solutionList.length) {
+                        console.log('found overlapping cluster solution with k=',k, solutionList, ' in ',new Date()-now, 'ms');
+                        let i = 0;
+                        for(const solution of solutionList) {
+                            solution.subgraphCopyInfo(graph);
+                            solution.styleEdgesOnAddedAndRemoved();
+                            graph.addSubgraph(solution, center, center.plus(new Vector2(width * (1.4 + i * 1.25), 0)))
+                            ++i;
+                        }
+                        break;
+                    }
+                    console.log('no solution for k=',k);
+                }
+
+                saveDataSave();
+                graph.visibleUpdateGrid();
+                graph.setVisible();
+                updateSet(new Date());
+                e.preventDefault();
+            }
             // "A": select all
             else if (e.key === "a" || e.key === "A") {
                 if(!EventKeyboardCanFire(e, true)) return;
@@ -859,6 +899,14 @@ export function GraphEditor({
 
             // screenToWorldCalculation(pan, zoom, x, y) = new Vector2((x - pan.x) / zoom, (y - pan.y) / zoom);
             const screenCenterNow = screenToWorldCalculation(view.pan, view.zoom, new Vector2(screenX, screenY));
+
+            // update visible: if too zoomed out hide edges
+            if(view.zoom > zoomThresholdNoEdges !== zoomNew <= zoomThresholdNoEdges) {
+                graph.incrementVersion(graph.verticesVisible.map(v => v.id));
+            }
+            if(view.zoom > zoomThresholdVertices !== zoomNew <= zoomThresholdVertices) {
+                graph.incrementVersion(graph.verticesVisible.map(v => v.id));
+            }
 
             // screenCenterNew = screenToWorldCalculation(panNew, zoomNew, x,y) = new Vector2((x - panNew.x) / zoomNew, (y - panNew.y) / zoomNew);
             // solving for panNew.x: (x - panNew.x) / zoomNew = screenCenterNow.x
@@ -1416,6 +1464,8 @@ export function GraphEditor({
         const lines: JSX.Element[] = [];
         if (!graph) return lines;
 
+        if(graph.viewData?.zoom < zoomThresholdNoEdges) return lines;
+
         for (const v of graph.vertices.values()) {
             for (const nId of v.neighbors) {
                 if (v.id >= nId) continue;
@@ -1424,7 +1474,17 @@ export function GraphEditor({
                 if(!v.visible && !n.visible) continue;
 
                 lines.push(<EdgeRender key={v.id+"-"+n.id} graph={graph} from={v} to={n}
-                                       versionFrom={v.version} versionTo={n.version}
+                                       versionFrom={v.version} versionTo={n.version} removed={false}
+                />)
+            }
+
+            for (const nId of v.neighborsRemoved) {
+                const n = graph.vertexGet(nId);
+                if (!n) continue;
+                if(!v.visible && !n.visible) continue;
+
+                lines.push(<EdgeRender key={v.id+"-"+n.id} graph={graph} from={v} to={n}
+                                       versionFrom={v.version} versionTo={n.version} removed={true}
                 />)
             }
         }
@@ -2279,7 +2339,8 @@ const EdgeRender = React.memo((props: {
     from: Vertex,
     to: Vertex,
     versionFrom: number,
-    versionTo: number
+    versionTo: number,
+    removed: boolean
 }) => {
     // console.log('edge re-render', props.from.id, props.to.id, props.from.visible, props.to.visible);
 
@@ -2292,11 +2353,14 @@ const EdgeRender = React.memo((props: {
     const endpointActive = fromActive || toActive;
     const endpointBothActive = fromActive && toActive;
 
-    const lineStyle = graph.edgeStyle.get(v.id)?.get(n.id) ?? LineStyleDefault();
+    const lineStyle = props.removed ? LineStyleEdgeRemoved() : graph.edgeStyle.get(v.id)?.get(n.id) ?? LineStyleDefault();
     const forbidden = graph.edgesForbidden.get(v.id)?.has(n.id);
 
-    const color = forbidden ? '#ff0000' : lineStyle.color;
+    const color = forbidden  ? '#ff0000' : lineStyle.color;
 
+    const optimize = props.graph.viewData?.zoom < zoomThresholdVertices;
+    if(optimize && Math.random() < Math.min(0.5, 0.025 * (v.degree() + n.degree()))) return <></>;
+    
     /*
         <line
             data-ui="true"
@@ -2401,6 +2465,9 @@ const VertexRender = React.memo((props: {
 
     const cliqueAmount = props.graph.cliqueVertexCounts.get(v.id);
     const labelEmpty = v.label?.length>0 && v.label.trim().length === 0;
+
+    // const optimize = props.graph.viewData?.zoom < zoomThresholdVertices;
+    // if(optimize && !v.svg && Math.random() < 0.25) return <></>;
 
     return <>
         <g data-vertex={v.id}

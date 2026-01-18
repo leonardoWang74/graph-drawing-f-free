@@ -11,6 +11,7 @@ export interface VertexData {
     y: number;
 
     neighbors: number[];
+    neighborsRemoved: number[];
 
     style: VertexStyle;
 }
@@ -36,6 +37,7 @@ export class Vertex {
     public style: VertexStyle;
 
     public neighbors: Set<number> = new Set<number>();
+    public neighborsRemoved: Set<number> = new Set<number>();
 
     /** version number. Only visually update the vertex if version changed */
     public version: number = 0;
@@ -112,6 +114,18 @@ export class Vertex {
         return vertex;
     }
 
+    /** make a copy of a vertex */
+    public cloneAlgorithm(): Vertex {
+        const vertex = new Vertex();
+
+        vertex.id = this.id;
+        for(const n of this.neighbors) {
+            vertex.neighbors.add(n);
+        }
+
+        return vertex;
+    }
+
     /** filter edges based on subgraph vertices */
     public subgraphFilter(vertices: number[]): void {
         // remove neighbors not in the vertices set
@@ -149,6 +163,7 @@ export class Vertex {
             y: this.position.y,
 
             neighbors: Array.from(this.neighbors).filter(to => to >= this.id),
+            neighborsRemoved: Array.from(this.neighborsRemoved).filter(to => to >= this.id),
 
             style: VertexStyleClone(this.style)
         };
