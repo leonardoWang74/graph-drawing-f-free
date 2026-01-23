@@ -336,14 +336,23 @@ export function GraphEditor({
         cliques: SubgraphWithHull[],
         cliquesNot: SubgraphWithHull[],
         cliquesVersion: number,
+
+        cliquesCritical: SubgraphWithHull[],
+        cliquesCriticalNot: SubgraphWithHull[],
+        cliquesCriticalVersion: number,
     }>({
         activeVertices: [],
         forbidden: [],
         forbiddenNot: [],
         forbiddenVersion: 0,
+
         cliques: [],
         cliquesNot: [],
         cliquesVersion: 0,
+
+        cliquesCritical: [],
+        cliquesCriticalNot: [],
+        cliquesCriticalVersion: 0,
     });
 
     /** =========================
@@ -567,6 +576,29 @@ export function GraphEditor({
         updateSet(new Date());
     }, []);
 
+    const keyboardCriticalCliques = useCallback((graph: Graph) => {
+        const now = new Date();
+        graph.cliquesCritical = [];
+        const cliquesCritical = graph.getSubgraphAlgorithm(graph.activeVertices).getCriticalCliques();
+        ++graph.cliquesCriticalVersion;
+        const duration = new Date() - now;
+
+        // count number of cliques per vertex
+        for(const subgraph of cliquesCritical) {
+            graph.cliquesCritical.push({
+                clique: subgraph,
+                hull: []
+            })
+        }
+        graph.setHulls(graph.cliquesCritical, 3);
+
+        // update version: updated number of cliques
+        graph.incrementVersion(graph.activeVertices);
+
+        console.log('found critical cliques: ', cliquesCritical.length, ` in time ${duration} ms`)
+        updateSet(new Date());
+    }, []);
+
     // keyboard functions without any dependencies except graph
     useEffect(() => {
         const onKey = (e: KeyboardEvent) => {
@@ -619,7 +651,10 @@ export function GraphEditor({
             else if (e.key === "c" || e.key === "C") {
                 if(!EventKeyboardCanFire(e)) return;
                 if(e.ctrlKey) return;
-                keyboardMaximalCliques(graph);
+
+                if(e.shiftKey) keyboardCriticalCliques(graph);
+                else keyboardMaximalCliques(graph);
+
                 e.preventDefault();
             }
             // "O": find maximal cliques
@@ -848,7 +883,7 @@ export function GraphEditor({
         return () => window.removeEventListener("keydown", onKey);
     }, [graph, saveDataSave,
         keyboardDeleteSelection, exportSelection, keyboardEdges, keyboardDisableSelection,
-        keyboardToggleShowOverlappingForbidden
+        keyboardToggleShowOverlappingForbidden, keyboardCriticalCliques, keyboardMaximalCliques
     ]);
 
     const keyboardAddVertex = useCallback((graph: Graph) => {
@@ -1289,6 +1324,7 @@ export function GraphEditor({
                 v.position = pos;
                 ++v.version;
                 graph.setHulls(graph.cliquesMaximal);
+                graph.setHulls(graph.cliquesCritical, 3);
                 updateSet(new Date());
             }
         }
@@ -1388,6 +1424,7 @@ export function GraphEditor({
             !ArrayEquals(graph.activeVertices, overlappingData.activeVertices)
             || overlappingData.forbiddenVersion !== graph.forbiddenVersion
             || overlappingData.cliquesVersion !== graph.cliquesVersion
+            || overlappingData.cliquesCriticalVersion !== graph.cliquesCriticalVersion
         ) {
             overlappingData.activeVertices = [...graph.activeVertices];
 
@@ -1396,6 +1433,11 @@ export function GraphEditor({
 
             overlappingData.cliques = [];
             overlappingData.cliquesNot = [];
+            overlappingData.cliquesVersion = graph.cliquesVersion;
+
+            overlappingData.cliquesCritical = [];
+            overlappingData.cliquesCriticalNot = [];
+            overlappingData.cliquesCriticalVersion = graph.cliquesCriticalVersion;
 
             if(activeVertices.length > 0) {
                 for(const g of graph.forbiddenInduced) {
@@ -1413,10 +1455,19 @@ export function GraphEditor({
                         overlappingData.cliquesNot.push(g);
                     }
                 }
+
+                for(const g of graph.cliquesCritical) {
+                    if(ArrayContainsAll(Array.from(g.clique), activeVertices)) {
+                        overlappingData.cliquesCritical.push(g);
+                    } else {
+                        overlappingData.cliquesCriticalNot.push(g);
+                    }
+                }
             }
             else {
                 overlappingData.forbidden = graph.forbiddenInduced;
                 overlappingData.cliques = graph.cliquesMaximal;
+                overlappingData.cliquesCritical = graph.cliquesCritical;
             }
         }
 
@@ -1449,6 +1500,25 @@ export function GraphEditor({
                 </button>
             }),
             cliquesNot: overlappingData.cliquesNot.map((set, index: number) => {
+                const ownVertices = Array.from(set.clique);
+                return <button key={index} className="block border-b w-full cursor" onClick={() => {
+                    graph.activeVerticesSet([...ownVertices]);
+                    updateSet(new Date());
+                }}>
+                    <span>{ownVertices.join(',')}</span>
+                </button>
+            }),
+            cliquesCritical: overlappingData.cliquesCritical.map((set, index: number) => {
+                const ownVertices = Array.from(set.clique);
+                return <button key={index} className="block border-b w-full cursor" onClick={() => {
+                    graph.activeVerticesSet([...ownVertices]);
+                    updateSet(new Date());
+                }}>
+                    <span className="font-bold mr-2">{activeVerticesString}</span>
+                    <span>{ownVertices.filter(v => !activeVertices.includes(v)).join(',')}</span>
+                </button>
+            }),
+            cliquesCriticalNot: overlappingData.cliquesCriticalNot.map((set, index: number) => {
                 const ownVertices = Array.from(set.clique);
                 return <button key={index} className="block border-b w-full cursor" onClick={() => {
                     graph.activeVerticesSet([...ownVertices]);
@@ -1720,7 +1790,10 @@ export function GraphEditor({
                     </style>
 
                     <g ref={worldRef} transform={`translate(${view.pan.x}, ${view.pan.y}) scale(${view.zoom})`}>
-                        <CliquesRender graph={graph} cliques={overlappingData.cliques} cliquesNot={overlappingData.cliquesNot} updateSet={updateSet} />
+                        <CliquesRender graph={graph}
+                                       cliques={overlappingData.cliques} cliquesNot={overlappingData.cliquesNot}
+                                       cliquesCritical={overlappingData.cliquesCritical} cliquesCriticalNot={overlappingData.cliquesCriticalNot}
+                                       updateSet={updateSet} />
                         {renderEdges(graph)}
                         {graph.verticesVisible.map(v =>
                             <VertexRender key={v.id} graph={graph} vertex={v} version={v.version} vertexClick={vertexClick}/>)}
@@ -2297,39 +2370,73 @@ const CliquesRender = React.memo((props: {
     graph: Graph,
     cliques: SubgraphWithHull[],
     cliquesNot: SubgraphWithHull[],
+    cliquesCritical: SubgraphWithHull[],
+    cliquesCriticalNot: SubgraphWithHull[],
     updateSet: (d: Date) => void,
 }) => {
     const someSelected = props.cliquesNot.length > 0;
+
+    const clickClique = useCallback((e: React.MouseEvent<SVGPathElement>, clique: SubgraphWithHull, i: number, list: SubgraphWithHull[]) => {
+        if(e.shiftKey) return;
+
+        // move to the back in the list
+        list.splice(i, 1);
+        list.unshift(clique);
+
+        props.graph.activeVerticesSet(Array.from(clique.clique));
+        e.preventDefault();
+        e.stopPropagation();
+        props.updateSet(new Date());
+    }, [props.graph]);
+
     return <>
-        {props.cliques.map((clique, i) =>
-            <path key={i}
+        {props.cliques.map((clique, i, list) =>
+            <path key={JSON.stringify(Array.from(clique.clique))}
                   d={"M " + clique.hull.map(p => `${p.x},${p.y}`).join(" L ") + " Z"}
                   fill={someSelected ? "#006bff30" : "#006bff10"}
                   stroke={someSelected ? "#006bfff0" : "#006bffa0"}
+                  pointerEvents={props.cliques.length===1 ? 'none' : undefined}
                   strokeWidth={1}
                   strokeLinejoin="round"
                   strokeLinecap="round"
                   strokeDasharray="2,4"
-                  onClick={e => {
-                      if(e.shiftKey) return;
-                      props.graph.activeVerticesSet(Array.from(clique.clique));
-                      props.updateSet(new Date());
-                  }}
+                  onMouseDown={e => clickClique(e, clique, i, list)}
             />)}
-        {props.cliquesNot.map((clique, i) =>
-            <path key={i}
+        {props.cliquesNot.map((clique, i, list) =>
+            <path key={JSON.stringify(Array.from(clique.clique))}
                   d={"M " + clique.hull.map(p => `${p.x},${p.y}`).join(" L ") + " Z"}
                   fill="#006bff05"
                   stroke="#006bff30"
+                  pointerEvents={props.cliques.length>1 ? 'none' : undefined}
                   strokeWidth={1}
                   strokeLinejoin="round"
                   strokeLinecap="round"
                   strokeDasharray="2,4"
-                  onClick={e => {
-                      if(e.shiftKey) return;
-                      props.graph.activeVerticesSet(Array.from(clique.clique));
-                      props.updateSet(new Date());
-                  }}
+                  onMouseDown={e => clickClique(e, clique, i, list)}
+            />)}
+
+        {props.cliquesCritical.map((clique, i, list) =>
+            <path key={JSON.stringify(Array.from(clique.clique))}
+                  d={"M " + clique.hull.map(p => `${p.x},${p.y}`).join(" L ") + " Z"}
+                  fill={someSelected ? "#5500FF30" : "#5500FF10"}
+                  stroke={someSelected ? "#5500FFf0" : "#5500FFa0"}
+                  pointerEvents={props.cliquesCritical.length===1 ? 'none' : undefined}
+                  strokeWidth={1}
+                  strokeLinejoin="round"
+                  strokeLinecap="round"
+                  strokeDasharray="4,4"
+                  onMouseDown={e => clickClique(e, clique, i, list)}
+            />)}
+        {props.cliquesCriticalNot.map((clique, i, list) =>
+            <path key={JSON.stringify(Array.from(clique.clique))}
+                  d={"M " + clique.hull.map(p => `${p.x},${p.y}`).join(" L ") + " Z"}
+                  fill="#5500FF05"
+                  stroke="#5500FF30"
+                  strokeWidth={1}
+                  strokeLinejoin="round"
+                  strokeLinecap="round"
+                  strokeDasharray="4,4"
+                  onMouseDown={e => clickClique(e, clique, i, list)}
             />)}
     </>;
 });

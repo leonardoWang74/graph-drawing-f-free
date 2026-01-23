@@ -1,7 +1,7 @@
 import Vector2 from "@/app/data/Vector2";
 import {Vertex, VertexData, VertexStyle, VertexStyleClone} from "@/app/data/Vertex";
 import Subsets from "@/app/util/Subsets";
-import {ArrayEquals} from "@/app/util/ArrayUtils";
+import {ArrayEquals, ArrayShuffleInPlace, IterableMaxima} from "@/app/util/ArrayUtils";
 import {SortNumberDescending} from "@/app/util/SortUtils";
 import {BijectionsCombination, BijectionsGraph} from "@/app/util/Bijections";
 import {ViewData} from "@/app/page";
@@ -164,6 +164,9 @@ class SpatialGrid {
 interface CliqueWithIndex {
     index: number;
     clique: Set<number>;
+
+    lowestVertexId: number;
+    highestVertexId: number;
 }
 
 export default class Graph {
@@ -187,6 +190,9 @@ export default class Graph {
     public cliqueVertexCounts: Map<number, number> = new Map<number, number>();
     public cliquesVersion: number = 0;
 
+    public cliquesCritical: SubgraphWithHull[] = [];
+    public cliquesCriticalVersion: number = 0;
+
     public edgeAdds: Vector2[] = [];
     public edgeRemoves: Vector2[] = [];
 
@@ -209,11 +215,17 @@ export default class Graph {
         return forbiddenCopy;
     }
 
+    private static overlappingForbiddenCliquesCopy(forbiddenCliques: Set<string>|undefined): Set<string> {
+        if(!forbiddenCliques) return new Set<string>();
+        return new Set<string>(forbiddenCliques);
+    }
+
     /** forbidden is a map of {vertexIdFrom (smaller ID): { vertexIdTo: value } } with value being TRUE if permanent and FALSE if forbidden */
     private *overlappingSolutions(
         s: number,
         k: number,
-        forbidden: Map<number, Map<number, boolean>>|undefined = undefined
+        forbidden: Map<number, Map<number, boolean>>|undefined = undefined,
+        forbiddenCliques: Set<string>|undefined = undefined,
     ): Generator<Graph> {
         // initial call
         if(forbidden === undefined) {
@@ -245,7 +257,8 @@ export default class Graph {
                 if(!vertexCliques.has(vId)) vertexCliques.set(vId, []);
                 const list = vertexCliques.get(vId)!;
 
-                list.push({clique: clique, index: i});
+                const maxima = IterableMaxima(clique)!;
+                list.push({clique: clique, index: i, lowestVertexId: maxima.lowest, highestVertexId: maxima.highest});
 
                 // set best vertex
                 if(list.length > s && list.length < vertexCount) {
@@ -274,6 +287,10 @@ export default class Graph {
             return;
         }*/
 
+        // prevent some clique merges (also in children of sibling branches)
+        // because e.g. merging A,B then B,C is the same as merging B,C then A,B
+        const forbiddenCliquesCopy = Graph.overlappingForbiddenCliquesCopy(forbiddenCliques);
+
         // otherwise: branch on possible merges / removals
         const cliques = vertexCliques.get(vertex.id)!;
         for(let i=0; i<cliques.length; ++i) {
@@ -289,6 +306,10 @@ export default class Graph {
                 const forbiddenCopy = Graph.overlappingForbiddenCopy(forbidden);
 
                 const clique2 = cliques[j];
+
+                // prevent A+B, B+C and B+C, A+B merges
+                if(clique.lowestVertexId > clique2.lowestVertexId) continue;
+                if(clique.lowestVertexId === clique2.lowestVertexId && clique.highestVertexId > clique2.highestVertexId) continue;
 
                 // need to only add edges between vertex pairs not overlapping both cliques = symmetrical difference
                 const symmVertices = Array.from(clique.clique.symmetricDifference(clique2.clique));
@@ -317,6 +338,11 @@ export default class Graph {
                         if(graph.edgeHas(vertexI, vertexJ)) continue;
 
                         ++cost;
+                        if(cost > k) {
+                            vi=symmVertices.length;
+                            break;
+                        }
+
                         graph.edgeAdds.push(new Vector2(fromId, toId));
                         graph.edgeAdd(vertexI, vertexJ);
 
@@ -332,15 +358,30 @@ export default class Graph {
                 // did nothing - do not branch
                 if(cost === 0) continue;
 
+                // only doing one single edit - can forbid this edit in other branches
+                if(cost === 1) {
+                    for(let vi=0; vi<symmVertices.length; ++vi) {
+                        for(let vj=vi+1; vj<symmVertices.length; ++vj) {
+                            const vertexI = graph.vertexGet( symmVertices[vi] )!;
+                            const vertexJ = graph.vertexGet( symmVertices[vj] )!;
+
+                            const [fromId, toId] = vertexI.id < vertexJ.id ? [vertexI.id, vertexJ.id] : [vertexJ.id, vertexI.id];
+
+                            // update forbidden: forbid edge
+                            if(!forbidden!.has(fromId)) forbidden!.set(fromId, new Map<number, boolean>());
+                            forbidden!.get(fromId)!.set(toId, false);
+                        }
+                    }
+                }
+
                 // cost too high - do not branch
                 if(cost > k) continue;
 
-                yield* graph.overlappingSolutions(s, k-cost, forbiddenCopy);
+                yield* graph.overlappingSolutions(s, k-cost, forbiddenCopy, forbiddenCliquesCopy);
             }
 
             /////////////////////////////////////////////////
             // remove from clique
-            if(!vertex) return;
 
             // find edges not in other cliques: get all edges in clique then remove overlapping ones
             const edgesNotInOtherCliques: Map<number, Set<number>> = new Map<number, Set<number>>();
@@ -395,6 +436,10 @@ export default class Graph {
                     }
 
                     ++cost;
+                    if(cost > k) {
+                        break;
+                    }
+
                     graph.edgeRemoves.push(new Vector2(fromId, toId));
                     graph.edgeRemove(from, to);
 
@@ -414,12 +459,20 @@ export default class Graph {
                         }
 
                         ++cost;
+                        if(cost > k) {
+                            break;
+                        }
+
                         graph.edgeRemoves.push(new Vector2(fromId, toId));
                         graph.edgeRemove(from, to);
 
                         // update forbidden
                         if(!forbiddenCopy.has(fromId)) forbiddenCopy.set(fromId, new Map<number, boolean>());
                         forbiddenCopy.get(fromId)!.set(toId, false);
+                    }
+
+                    if(cost > k) {
+                        break;
                     }
                 }
             }
@@ -432,7 +485,7 @@ export default class Graph {
 
             // removed at least one edge
             if(cost > 0) {
-                yield* graph.overlappingSolutions(s, k-cost, forbiddenCopy);
+                yield* graph.overlappingSolutions(s, k-cost, forbiddenCopy, forbiddenCliquesCopy);
                 continue;
             }
 
@@ -450,12 +503,19 @@ export default class Graph {
                     }
 
                     ++cost;
+                    if(cost > k) {
+                        break;
+                    }
+
                     graph.edgeRemoves.push(new Vector2(fromId, toId));
                     graph.edgeRemove(from, to);
 
                     // update forbidden
                     if(!forbiddenCopy.has(fromId)) forbiddenCopy.set(fromId, new Map<number, boolean>());
                     forbiddenCopy.get(fromId)!.set(toId, false);
+                }
+                if(cost > k) {
+                    break;
                 }
             }
 
@@ -467,7 +527,7 @@ export default class Graph {
 
             // removed at least one edge
             if(cost > 0) {
-                yield* graph.overlappingSolutions(s, k-cost, forbiddenCopy);
+                yield* graph.overlappingSolutions(s, k-cost, forbiddenCopy, forbiddenCliquesCopy);
                 continue;
             }
 
@@ -508,12 +568,19 @@ export default class Graph {
                     }
 
                     ++cost;
+                    if(cost > k) {
+                        break;
+                    }
+
                     graph.edgeRemoves.push(new Vector2(fromId, toId));
                     graph.edgeRemove(from, to);
 
                     // update forbidden
                     if(!forbiddenCopy.has(fromId)) forbiddenCopy.set(fromId, new Map<number, boolean>());
                     forbiddenCopy.get(fromId)!.set(toId, false);
+                }
+                if(cost > k) {
+                    break;
                 }
             }
 
@@ -525,7 +592,7 @@ export default class Graph {
 
             // removed at least one edge
             if(cost > 0) {
-                yield* graph.overlappingSolutions(s, k-cost, forbiddenCopy);
+                yield* graph.overlappingSolutions(s, k-cost, forbiddenCopy, forbiddenCliquesCopy);
             }
         }
     }
@@ -547,6 +614,70 @@ export default class Graph {
         if(result) return result.value;
 
         return undefined;
+    }
+
+    /** find critical cliques in the graph
+     * function Lexicographic(G) in [Hsu and Ma 1991, Substitution decomposition on chordal graphs and applications]
+     * with the closed neighborhood instead of the open neighborhood to find all type I modules:
+     * "All type I module[s] can be located in $\mathcal O (n+m)$ time by partitioning the vertices
+     * using the augmented neighborhoods of all vertices. If there is a set with more than one vertex
+     * at the end of the partitioning process, it is a type I module."*/
+    public getCriticalCliques(): Set<number>[] {
+        let map: Map<string, Set<number>> = new Map<string, Set<number>>();
+
+        for(const vertex of this.vertices.values()) {
+            const closedNeighborhood = vertex.neighbors.union(new Set<number>([vertex.id]));
+            const key = JSON.stringify(Array.from(closedNeighborhood).sort());
+
+            if(!map.has(key)) map.set(key, new Set<number>());
+            map.get(key)!.add(vertex.id);
+        }
+
+        return map.values().toArray();
+
+        /*
+        // initial set of all vertex IDs in the graph
+        // S := { V };
+        let S: Set<number>[] = [ new Set<number>(this.vertices.keys()) ];
+
+        const n = this.n();
+        for(let i=1; i<=n; ++i) {
+            if(S.length === 0) break;
+
+            // v := the first element of the first set in S
+            const v = SetGetAny(S[0]);
+            if(v === undefined) break;
+            const vertex = this.vertexGet(v)!;
+
+            console.log(i, v);
+
+            // remove v
+            // ignore this step since otherwise all sets are empty
+            // S[0].delete(v);
+
+            // \pi(i) := v
+            // ignore this step as we don't need the ordering
+
+            const closedNeighborhood = vertex.neighbors.union(new Set<number>([v]));
+
+            // split each S_j \in S into S_j \cap N[v] and S_j \setminus N[v]
+            // (use the closed neighborhood)
+            // discard empty sets
+            const SNew: Set<number>[] = [];
+            for(const set of S) {
+                const intersection = set.intersection(closedNeighborhood);
+                const difference = set.difference(closedNeighborhood);
+                if(intersection.size > 0) SNew.push(intersection);
+                if(difference.size > 0) SNew.push(difference);
+
+                console.log(intersection, difference);
+            }
+            S = SNew;
+        }
+
+        console.log(S);
+
+        return S;*/
     }
 
     /** find maximal cliques in the graph */
@@ -576,8 +707,7 @@ export default class Graph {
         // for each vertex vi in a degeneracy ordering $v_0, v_1, v_2, \dots$ of $(V,E)$ do
         for(let i = 0; i < degeneracyInfo.ordering.length; ++i) {
             const vId = degeneracyInfo.ordering[i];
-            const v = this.vertexGet(vId);
-            if(!v) continue;
+            const v = this.vertexGet(vId)!;
 
             // const previous = new Set<number>(degeneracyInfo.ordering.slice(0, i));
             const next = new Set<number>(degeneracyInfo.ordering.slice(i+1, degeneracyInfo.ordering.length));
@@ -591,7 +721,9 @@ export default class Graph {
 
             // $P \cup X = N(v_i)$ holds therefore also $X = N(v_i) \setminus P$
             // so we don't need to calculate the slice of the previous vertices in the ordering
-            const X = v.neighbors.difference(P);
+            // const X = v.neighbors.difference(P);
+            const X = v.neighbors.difference(next);
+            // const X = v.neighbors.intersection(previous);
 
             this.BronKerboschPivot(list, P, new Set<number>([vId]), X);
         }
@@ -617,21 +749,22 @@ export default class Graph {
         let pivot: Vertex|undefined = undefined;
         let pivotValue = -1;
         for(const vId of pivotCandidates) {
-            const v = this.vertexGet(vId);
-            if(!v) continue;
+            const v = this.vertexGet(vId)!;
             const value = P.intersection(v.neighbors).size;
             if(value > pivotValue) {
                 pivot = v;
                 pivotValue = value;
             }
         }
-        if(!pivot) return;
+        if(!pivot) {
+            console.error("pivot empty")
+            return;
+        }
 
         // for each vertex $v \in P \setminus N(u)$ do
         const loopSet= P.difference(pivot.neighbors);
         for(const vId of loopSet) {
-            const v = this.vertexGet(vId);
-            if(!v) return;
+            const v = this.vertexGet(vId)!;
 
             // BronKerboschPivot($P \cap N(v)$, $R \cup \{v\}$, $X \cap N(v)$)
             this.BronKerboschPivot(result,
@@ -659,12 +792,14 @@ export default class Graph {
         const degreesMap: Map<number, Vertex[]> = new Map<number, Vertex[]>();
 
         // build map of degree -> list of vertices with that degree
-        for(const v of this.vertices.values()) {
+        const vertices = this.getVerticesAsArray();
+        ArrayShuffleInPlace(vertices);
+        for(const v of vertices) {
             const degree = v.degree();
             smallestDegree = Math.min(smallestDegree, degree);
 
             if(!degreesMap.has(degree)) degreesMap.set(degree, []);
-            degreesMap.get(degree)?.push(v);
+            degreesMap.get(degree)!.push(v);
 
             verticesMap.set(v.id, degree);
         }
@@ -685,7 +820,7 @@ export default class Graph {
                 if(verticesMap.size > 0) {
                     while(smallestDegree < n) {
                         ++smallestDegree;
-                        if(verticesMap.has(smallestDegree)) break;
+                        if(degreesMap.has(smallestDegree)) break;
                     }
                 }
             }
@@ -696,8 +831,7 @@ export default class Graph {
             // remove neighbors
             let degeneracyHere = 0;
             for(const neighbor of v.neighbors) {
-                const neighborVertex = this.vertexGet(neighbor);
-                if(!neighborVertex) continue;
+                const neighborVertex = this.vertexGet(neighbor)!;
 
                 const degreePrevious = verticesMap.get(neighbor);
                 if(degreePrevious===undefined) continue;
@@ -727,8 +861,8 @@ export default class Graph {
                 degreesMap.get(degreeNew)?.push(neighborVertex);
 
                 // maybe change smallest degree
-                if(degreePrevious <= smallestDegree) {
-                    smallestDegree = degreePrevious - 1;
+                if(degreeNew < smallestDegree) {
+                    smallestDegree = degreeNew;
                 }
             }
 
@@ -1121,7 +1255,7 @@ export default class Graph {
         return bound;
     }
 
-    public setHulls(list: SubgraphWithHull[]) {
+    public setHulls(list: SubgraphWithHull[], radiusAdd = 6) {
         // count number of cliques per vertex
         for(const subgraphWithHull of list) {
             const points: Vector2[] = [];
@@ -1129,7 +1263,7 @@ export default class Graph {
                 const v = this.vertexGet(vId);
                 if(!v) continue;
                 const style = v.style ?? VertexStyleDefault();
-                const radius = (style.radius ?? 14) + 6;
+                const radius = (style.radius ?? 14) + radiusAdd;
                 points.push(v.position);
 
                 for(let i=0; i<9; ++i) {
