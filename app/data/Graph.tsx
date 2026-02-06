@@ -22,6 +22,11 @@ export interface LineStyle {
     type: LineType;
     weight: number;
 }
+export interface LineStyleSave {
+    color?: string;
+    type?: LineType;
+    weight?: number;
+}
 export function LineStyleClone(style: LineStyle): LineStyle {
     return JSON.parse(JSON.stringify(style));
 }
@@ -50,6 +55,27 @@ export function LineStyleEdgeRemoved(): LineStyle {
     };
 }
 
+export function LineStyleToSave(style: LineStyle): LineStyleSave {
+    const result: LineStyleSave = {};
+    if(!style) return result;
+    const styleDefault = LineStyleDefault();
+
+    if(style.color !== styleDefault.color) result.color = style.color;
+    if(style.type !== styleDefault.type) result.type = style.type;
+    if(style.weight !== styleDefault.weight) result.weight = style.weight;
+
+    return result;
+}
+export function LineStyleFromSave(style: LineStyleSave): LineStyle {
+    const result = LineStyleDefault();
+    if(!style) return result;
+
+    if(style.color) result.color = style.color;
+    if(style.type) result.type = style.type;
+    if(style.weight) result.weight = style.weight;
+
+    return result;
+}
 export function VertexStyleDefault(): VertexStyle {
     return {
         radius: 18,
@@ -66,11 +92,11 @@ export interface SubgraphWithHull {
 }
 
 export interface BoundingVertices {
-    leftMost?: Vertex;
-    rightMost?: Vertex;
+    leftMost: Vertex;
+    rightMost: Vertex;
 
-    upperMost?: Vertex;
-    bottomMost?: Vertex;
+    upperMost: Vertex;
+    bottomMost: Vertex;
 }
 
 type CellKey = string;
@@ -164,9 +190,22 @@ class SpatialGrid {
 interface CliqueWithIndex {
     index: number;
     clique: Set<number>;
+}
+
+interface CliqueWithIndexAndMaxima {
+    index: number;
+    clique: Set<number>;
 
     lowestVertexId: number;
     highestVertexId: number;
+}
+
+interface EdgeEdit {
+    from: Vertex;
+    to: Vertex;
+
+    /** TRUE if the edge should be added. FALSE if the edge should be removed */
+    add: boolean;
 }
 
 export default class Graph {
@@ -200,6 +239,342 @@ export default class Graph {
     // region complex functions
     // list induced subgraphs, get degeneracy, find maximal cliques
     //////////////////////////////////////////
+
+    private static overlappingSolutionsFilterForbiddenEdits(forbidden: Map<number, Map<number, boolean>>, edits: EdgeEdit[]) {
+        for(let i=edits.length-1; i>=0; --i) {
+            const edit = edits[i];
+
+            // swap so from always has a smaller id
+            if(edit.from.id > edit.to.id) {
+                const swap = edit.from;
+                edit.from = edit.to;
+                edit.to = swap;
+            }
+
+            const map = forbidden.get(edit.from.id);
+            if(!map) continue;
+            if(!map.has(edit.to.id)) continue;
+
+            // if edit was done already OR edit would contradict forbidden, we don't branch on it anymore
+            edits.splice(i, 1);
+        }
+    }
+
+    public *overlappingSolutionsSEqualsTwoBranchAndBound(
+        k: number,
+        forbidden: Map<number, Map<number, boolean>>|undefined = undefined,
+    ): Generator<Graph> {
+        // budget empty
+        if(k < 0) return;
+
+        const s = 2;
+
+        // initial call
+        if(forbidden === undefined) {
+            forbidden = new Map<number, Map<number, boolean>>();
+            this.edgeAdds = [];
+            this.edgeRemoves = [];
+        }
+
+        const maximalCliques = this.getMaximalCliques();
+
+        /** count of cliques overlapping vertex. smallest number of cliques > s */
+        let vertexCount = s * this.n();
+        /** vertex with count of cliques */
+        let vertexCandidate: Vertex | undefined = undefined;
+
+        /** max count of cliques overlapping vertex */
+        let maxCount = 0;
+
+        const vertexCliques: Map<number, CliqueWithIndex[]> = new Map<number, CliqueWithIndex[]>();
+
+        // count number of maximal cliques per vertex
+        for(let i=0; i<maximalCliques.length; ++i) {
+            const clique = maximalCliques[i];
+
+            for(const vId of clique) {
+                const v = this.vertexGet(vId)!;
+
+                // add clique to list
+                if(!vertexCliques.has(vId)) vertexCliques.set(vId, []);
+                const list = vertexCliques.get(vId)!;
+
+                list.push({clique: clique, index: i});
+
+                // set best vertex (smallest degree vertex in above s cliques)
+                if(list.length > s && v.degree() < vertexCount) {
+                    vertexCount = v.degree();
+                    vertexCandidate = v;
+                }
+
+                // count max
+                if(list.length > maxCount) {
+                    maxCount = list.length;
+                }
+            }
+        }
+
+        // no vertex in more than s cliques: no edits needed
+        if(maxCount <= s) {
+            const solution = this.cloneAlgorithm();
+            solution.edgeAdds = [...this.edgeAdds];
+            solution.edgeRemoves = [...this.edgeRemoves];
+            console.log("Found solution with edgeAdds", solution.edgeAdds, " edgeRemoves:", solution.edgeRemoves);
+            yield solution;
+            return;
+        }
+
+        // cannot find a solution since we have no budget left
+        if(k <= 0) return;
+
+        if(!vertexCandidate) return;
+        const uVertex = vertexCandidate;
+        // const cliques = vertexCliques.get(uVertex.id)!;
+
+        let branchingEdits: EdgeEdit[] | undefined = undefined;
+
+        // try to find a forbidden subgraph in $u$ (preferred claw, since there are fewer branches)
+        const neighborList = Array.from(uVertex.neighbors);
+        const degree = uVertex.neighbors.size;
+        for(let vIndex=0; vIndex<degree; ++vIndex) {
+            const vVertex = this.vertexGet(neighborList[vIndex])!;
+            for(let wIndex=vIndex+1; wIndex<degree; ++wIndex) {
+                const wVertex = this.vertexGet(neighborList[wIndex])!;
+
+                const edgeVW = vVertex.edgeHas(wVertex);
+
+                for(let xIndex= wIndex+1; xIndex<degree; ++xIndex) {
+                    const xVertex = this.vertexGet(neighborList[xIndex])!;
+
+                    const edgeVX = vVertex.edgeHas(xVertex);
+                    const edgeWX = wVertex.edgeHas(xVertex);
+
+                    // found a claw
+                    if(!edgeVW && !edgeVX && !edgeWX) {
+                        const edits: EdgeEdit[] = [
+                            // remove edges from u
+                            {from: uVertex, to: vVertex, add: false},
+                            {from: uVertex, to: wVertex, add: false},
+                            {from: uVertex, to: xVertex, add: false},
+
+                            // add edges
+                            {from: vVertex, to: wVertex, add: true},
+                            {from: vVertex, to: xVertex, add: true},
+                            {from: wVertex, to: xVertex, add: true},
+                        ];
+                        Graph.overlappingSolutionsFilterForbiddenEdits(forbidden!, edits);
+                        if(edits.length > 0 && (branchingEdits===undefined || edits.length < branchingEdits.length)) {
+                            branchingEdits = edits;
+                        }
+
+                        // cannot find F2 or F3 when there is a claw
+                        // continue; // but could find another F1
+                    }
+
+                    // F1,F2,F3 don't have a triangle
+                    if(edgeVW && edgeWX && edgeVX) continue;
+
+                    for(let yIndex= xIndex+1; yIndex<degree; ++yIndex) {
+                        const yVertex = this.vertexGet(neighborList[yIndex])!;
+
+                        const subgraph = this.getSubgraphAlgorithm([vVertex.id, wVertex.id, xVertex.id, yVertex.id]);
+                        const vSub = subgraph.vertexGet(vVertex.id)!;
+                        const wSub = subgraph.vertexGet(wVertex.id)!;
+                        const xSub = subgraph.vertexGet(xVertex.id)!;
+                        const ySub = subgraph.vertexGet(yVertex.id)!;
+
+                        // too many edges
+                        const edgeCount = subgraph.m();
+                        if(edgeCount < 3 || edgeCount > 4) {
+                            continue;
+                        }
+
+                        // check degrees
+                        const vDegree = vSub.degree();
+                        const wDegree = wSub.degree();
+                        const xDegree = xSub.degree();
+                        const yDegree = ySub.degree();
+
+                        if(vDegree===0 || wDegree===0 || xDegree===0 || yDegree===0) {
+                            console.log("Skipping: one degree 0 ", subgraph);
+                            continue;
+                        }
+
+                        let edits: EdgeEdit[];
+
+                        // F1: found a claw in the 4 vertices if edgeCount = 3
+                        if(vDegree===3) {
+                            if(edgeCount > 3) {
+                                continue;
+                            }
+                            edits = [
+                                // remove edges from claw center
+                                {from: vVertex, to: wVertex, add: false},
+                                {from: vVertex, to: xVertex, add: false},
+                                {from: vVertex, to: yVertex, add: false},
+
+                                // add edges between claw leaves
+                                {from: wVertex, to: xVertex, add: true},
+                                {from: wVertex, to: yVertex, add: true},
+                                {from: xVertex, to: yVertex, add: true},
+                            ];
+                        }
+                        else if(wDegree===3) {
+                            if(edgeCount > 3) {
+                                continue;
+                            }
+                            edits = [
+                                // remove edges from claw center
+                                {from: wVertex, to: vVertex, add: false},
+                                {from: wVertex, to: xVertex, add: false},
+                                {from: wVertex, to: yVertex, add: false},
+
+                                // add edges between claw leaves
+                                {from: vVertex, to: xVertex, add: true},
+                                {from: vVertex, to: yVertex, add: true},
+                                {from: xVertex, to: yVertex, add: true},
+                            ];
+                        }
+                        else if(xDegree===3) {
+                            if(edgeCount > 3) {
+                                continue;
+                            }
+                            edits = [
+                                // remove edges from claw center
+                                {from: xVertex, to: vVertex, add: false},
+                                {from: xVertex, to: wVertex, add: false},
+                                {from: xVertex, to: yVertex, add: false},
+
+                                // add edges between claw leaves
+                                {from: vVertex, to: wVertex, add: true},
+                                {from: vVertex, to: yVertex, add: true},
+                                {from: wVertex, to: yVertex, add: true},
+                            ];
+                        }
+                        else if(yDegree===3) {
+                            if(edgeCount > 3) {
+                                continue;
+                            }
+                            edits = [
+                                // remove edges from claw center
+                                {from: yVertex, to: vVertex, add: false},
+                                {from: yVertex, to: wVertex, add: false},
+                                {from: yVertex, to: xVertex, add: false},
+
+                                // add edges between claw leaves
+                                {from: vVertex, to: wVertex, add: true},
+                                {from: vVertex, to: xVertex, add: true},
+                                {from: wVertex, to: xVertex, add: true},
+                            ];
+                        }
+
+                        // F2: 3 edges, no vertices with degree = 0 or degree = 3
+                        else if(edgeCount === 3) {
+                            // get the P_4 path: have to start at a vertex with degree = 1
+                            let walk: Vertex[];
+                            if(vDegree===1) {
+                                walk = subgraph.getAnyWalk(vSub, 4);
+                            }
+                            else if(wDegree===1) {
+                                walk = subgraph.getAnyWalk(wSub, 4);
+                            }
+                            else if(xDegree===1) {
+                                walk = subgraph.getAnyWalk(xSub, 4);
+                            }
+                            else if(yDegree===1) {
+                                walk = subgraph.getAnyWalk(ySub, 4);
+                            }
+
+                            if(walk.length < 4) {
+                                console.error("walk length less than 4", walk);
+                            }
+
+                            edits = [
+                                // remove edges from u
+                                {from: uVertex, to: vVertex, add: false},
+                                {from: uVertex, to: wVertex, add: false},
+                                {from: uVertex, to: xVertex, add: false},
+                                {from: uVertex, to: yVertex, add: false},
+
+                                // remove center bottom edge
+                                {from: this.vertexGet(walk[1].id)!, to: this.vertexGet(walk[2].id)!, add: false},
+
+                                // add edges between P4
+                                {from: this.vertexGet(walk[0].id)!, to: this.vertexGet(walk[2].id)!, add: true},
+                                {from: this.vertexGet(walk[1].id)!, to: this.vertexGet(walk[3].id)!, add: true},
+                            ];
+                        }
+
+                        // F3: all degrees are exactly 2
+                        else {
+                            let walk = subgraph.getAnyWalk(vSub, 4);
+                            if(walk.length < 4) {
+                                console.error("walk length less than 4", walk);
+                            }
+                            edits = [
+                                // remove edges from u
+                                {from: uVertex, to: vVertex, add: false},
+                                {from: uVertex, to: wVertex, add: false},
+                                {from: uVertex, to: xVertex, add: false},
+                                {from: uVertex, to: yVertex, add: false},
+
+                                // add edges between C4
+                                {from: this.vertexGet(walk[0].id)!, to: this.vertexGet(walk[2].id)!, add: true},
+                                {from: this.vertexGet(walk[1].id)!, to: this.vertexGet(walk[3].id)!, add: true},
+                            ];
+                        }
+
+                        // filter edits, fix order from < to
+                        Graph.overlappingSolutionsFilterForbiddenEdits(forbidden!, edits);
+                        if(edits.length > 0 && (branchingEdits===undefined || edits.length < branchingEdits.length)) {
+                            branchingEdits = edits;
+                        }
+                    }
+                }
+            }
+        }
+
+        // did not find a forbidden subgraph in $u$ with non-forbidden edits = cannot solve
+        if(branchingEdits===undefined) {
+            return;
+        }
+
+        console.log(branchingEdits)
+
+        // branch on all possible edits
+        for(const edit of branchingEdits) {
+            if(!forbidden.has(edit.from.id)) forbidden.set(edit.from.id, new Map<number, boolean>());
+
+            const forbiddenCopy = Graph.overlappingForbiddenCopy(forbidden);
+
+            // change forbidden
+            forbiddenCopy.get(edit.from.id)!.set(edit.to.id, edit.add);
+
+            // do the edit
+            if(edit.add) {
+                this.edgeAdd(edit.from, edit.to);
+                this.edgeAdds.unshift(new Vector2(edit.from.id, edit.to.id));
+            } else {
+                this.edgeRemove(edit.from, edit.to);
+                this.edgeRemoves.unshift(new Vector2(edit.from.id, edit.to.id));
+            }
+
+            // branch
+            yield* this.overlappingSolutionsSEqualsTwoBranchAndBound(k-1, forbiddenCopy);
+
+            // undo the edit
+            if(edit.add) {
+                this.edgeRemove(edit.from, edit.to);
+                this.edgeAdds.shift();
+            } else {
+                this.edgeAdd(edit.from, edit.to);
+                this.edgeRemoves.shift();
+            }
+
+            // forbid the opposite for other branches
+            forbidden.get(edit.from.id)!.set(edit.to.id, !edit.add);
+        }
+    }
 
     private static overlappingForbiddenCopy(forbidden: Map<number, Map<number, boolean>>|undefined): Map<number, Map<number, boolean>> {
         const forbiddenCopy: Map<number, Map<number, boolean>> = new Map<number, Map<number, boolean>>();
@@ -244,7 +619,7 @@ export default class Graph {
         /** max count of cliques overlapping vertex */
         let maxCount = 0;
 
-        const vertexCliques: Map<number, CliqueWithIndex[]> = new Map<number, CliqueWithIndex[]>();
+        const vertexCliques: Map<number, CliqueWithIndexAndMaxima[]> = new Map<number, CliqueWithIndexAndMaxima[]>();
 
         // count number of maximal cliques per vertex
         for(let i=0; i<maximalCliques.length; ++i) {
@@ -1204,6 +1579,84 @@ export default class Graph {
     // subgraph, components, list of vertex degrees
     //////////////////////////////////////////
 
+    /** apply force to the vertices. Vertices with edges in-between them attract each other.
+     * Vertices without edges in-between them push each other away. All Vertices are assumed
+     * to have a mass of 1kg */
+    public forceApply(timeDelta: number = 0.01, timeSteps: number = 150, forceAttract: number = 1.5, forcePush: number = 0.5): void {
+        const velocityMap: Map<number, Vector2> = new Map<number, Vector2>();
+
+        for(let t=0; t<timeSteps; ++t) {
+            const forceMap: Map<number, Vector2> = new Map<number, Vector2>();
+
+            // sum up forces
+            for(const v of this.vertices.values()) {
+                for(const w of this.vertices.values()) {
+                    if(v.id >= w.id) continue;
+
+                    const delta = w.position.minus(v.position).unit();
+                    const distance = delta.length();
+                    const unit = delta.unit();
+                    // let forceAdd = (this.edgeHas(v, w) ? forceAttract : -forcePush) / (distance * distance);
+                    let forceAdd = (this.edgeHas(v, w) ? forceAttract : -forcePush) / (distance * distance);
+
+                    if(forceAdd > 0 && delta.length() < 20) forceAdd = -forcePush*0.1;
+
+                    // add forces
+                    forceMap.set(v.id, (forceMap.get(v.id) ?? new Vector2(0,0)).plus(unit.mult(forceAdd)));
+                    forceMap.set(w.id, (forceMap.get(w.id) ?? new Vector2(0,0)).plus(unit.mult(-forceAdd)));
+                }
+            }
+
+            // apply forces, move
+            for(const v of this.vertices.values()) {
+                const force = forceMap.get(v.id) ?? new Vector2(0,0);
+                const velocityNew = (velocityMap.get(v.id) ?? new Vector2(0,0)).plus(force);
+                velocityMap.set(v.id, velocityNew);
+
+                v.position = v.position.plus(velocityNew.mult(timeDelta));
+            }
+        }
+    }
+
+    /** parse a graph6 string and return the graph */
+    public static parseGraph6(g6: string): Graph {
+        const graph = new Graph();
+        let idx = 0;
+
+        // number of vertices = first character
+        const n = g6.charCodeAt(idx++) - 63;
+        const radius = 20;
+        for(let i=0; i<n; ++i) {
+            const angle = i * 2 * Math.PI / n;
+            const v = Vertex.Vertex(new Vector2(radius * Math.cos(angle), radius * Math.sin(angle)));
+            v.id = i;
+            v.label = "" + i;
+            graph.vertexAdd(v);
+        }
+
+        // adjacency bits = other characters
+        let bitBuffer = 0;
+        let bitCount = 0;
+        for (let i=0; i<n; i++) {
+            for (let j=0; j<i; j++) {
+                // every character = 6 bits
+                if (bitCount === 0) {
+                    bitBuffer = g6.charCodeAt(idx++) - 63;
+                    bitCount = 6;
+                }
+                bitCount--;
+                const bit = (bitBuffer >> bitCount) & 1;
+
+                if(bit === 0) continue;
+                const v = graph.vertexGet(i)!;
+                const w = graph.vertexGet(j)!;
+                graph.edgeAdd(v, w);
+            }
+        }
+
+        return graph;
+    }
+
     /** set edge styles based on this.eggeAdds and this.edgeRemove */
     public styleEdgesOnAddedAndRemoved() {
         for(const edge of this.edgeAdds) {
@@ -1238,21 +1691,31 @@ export default class Graph {
         }
     }
 
-    public getBoundingVerticesSubgraph(vertexIDs: number[]): BoundingVertices {
-        const bound: BoundingVertices = {};
+    public getBoundingVerticesSubgraph(vertexIDs: number[]): BoundingVertices|undefined {
+        let leftMost: Vertex|undefined = undefined;
+        let rightMost: Vertex|undefined = undefined;
+        let upperMost: Vertex|undefined = undefined;
+        let bottomMost: Vertex|undefined = undefined;
 
         for(const vId of vertexIDs) {
             const v = this.vertexGet(vId);
             if(!v) continue;
 
-            if(!bound.leftMost || v.position.x < bound.leftMost.position.x) bound.leftMost = v;
-            if(!bound.rightMost || v.position.x > bound.rightMost.position.x) bound.rightMost = v;
+            if(!leftMost || v.position.x < leftMost.position.x) leftMost = v;
+            if(!rightMost || v.position.x > rightMost.position.x) rightMost = v;
 
-            if(!bound.upperMost || v.position.y < bound.upperMost.position.y) bound.upperMost = v;
-            if(!bound.bottomMost || v.position.y > bound.bottomMost.position.y) bound.bottomMost = v;
+            if(!upperMost || v.position.y < upperMost.position.y) upperMost = v;
+            if(!bottomMost || v.position.y > bottomMost.position.y) bottomMost = v;
         }
 
-        return bound;
+        if(!leftMost || !rightMost || !upperMost || !bottomMost) return undefined;
+
+        return {
+            leftMost,
+            rightMost,
+            upperMost,
+            bottomMost,
+        };
     }
 
     public setHulls(list: SubgraphWithHull[], radiusAdd = 6) {
@@ -1266,8 +1729,8 @@ export default class Graph {
                 const radius = (style.radius ?? 14) + radiusAdd;
                 points.push(v.position);
 
-                for(let i=0; i<9; ++i) {
-                    points.push(v.position.plus(Vector2.fromAngleAndLength(i * 2 * Math.PI / 9, radius)));
+                for(let i=0; i<15; ++i) {
+                    points.push(v.position.plus(Vector2.fromAngleAndLength(i * 2 * Math.PI / 15, radius)));
                 }
             }
             subgraphWithHull.hull = Vector2.concaveHull(points);
@@ -1402,16 +1865,44 @@ export default class Graph {
         return graph;
     }
 
+    /** get any walk with at most `path_size_max` vertices, starting in `vertex_start`.
+     * Prevents v,w,v from happening but v,w,x,v could happen. O(path_size_max) */
+    public getAnyWalk(startVertex: Vertex, pathMaxLength: number): Vertex[] {
+        const path = [startVertex];
+
+        let vertex = startVertex;
+        for(let i=1; i<pathMaxLength; ++i) {
+            let next: Vertex|undefined = undefined;
+
+            // find first neighbor that is not `vertex`
+            for(const neighborId of vertex.neighbors) {
+                const v = this.vertexGet(neighborId);
+                if(neighborId === vertex.id || !v) continue;
+                next = v;
+                break;
+            }
+
+            // did not find a new neighbor
+            if(!next) break;
+            vertex = next;
+            path.push(vertex);
+        }
+
+        return path;
+    }
+
     /** get a subgraph (reduced set of vertices, with the same edges). Creates new vertices with the same IDs (doesn't use the same vertex objects) */
     public getSubgraphAlgorithm(vertices: number[]): Graph {
         const graph = new Graph();
 
-        for(const vertex of this.vertices.values()) {
-            if(!vertices.includes(vertex.id)) continue;
+        for(const vid of vertices) {
+            const vertex = this.vertexGet(vid);
+            if(!vertex) continue;
             const v = vertex.clone();
             v.subgraphFilter(vertices);
             graph.vertexAdd(v);
         }
+
         return graph;
     }
 
@@ -1562,7 +2053,7 @@ export default class Graph {
         for(const v of this.vertices.values()) {
             m += v.degree();
         }
-        return m;
+        return m / 2;
     }
     /** returns the number of edges (m) in the graph */
     public numberOfEdges(): number {
@@ -1718,13 +2209,8 @@ export default class Graph {
 
     /** create a new graph */
     public static Graph(): Graph {
-        const graph = new Graph();
-
-        const v1 = graph.vertexAdd(Vertex.Vertex(new Vector2(50,50 )));
-        const v2 = graph.vertexAdd(Vertex.Vertex(new Vector2(100,50 )));
-        graph.edgeAdd(v1, v2);
-
-        return graph;
+        // const graph = new Graph();
+        return new Graph();
     }
     // endregion initialization functions
 }

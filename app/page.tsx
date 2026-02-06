@@ -2,12 +2,14 @@
 
 import React, {JSX, useCallback, useEffect, useRef, useState} from "react";
 import Graph, {
-    SubgraphWithHull,
+    BoundingVertices,
     GraphData,
     LineStyle,
     LineStyleClone,
     LineStyleDefault,
-    VertexStyleDefault, BoundingVertices, LineStyleEdgeRemoved
+    LineStyleEdgeRemoved,
+    SubgraphWithHull,
+    VertexStyleDefault
 } from "@/app/data/Graph";
 import {Vertex, VertexStyle, VertexStyleClone} from "@/app/data/Vertex";
 import Vector2 from "@/app/data/Vector2";
@@ -124,6 +126,9 @@ export default function GraphWindow() {
 
         // save to localStorage
         localStorage.setItem('save-data', JSON.stringify(saveData));
+        /*indexedDB.
+        ldb.setItem('save-data', JSON.stringify(saveData));*/
+        // console.log(JSON.stringify(saveData));
     }, [saveData, graph]);
 
     const setGraphActive = useCallback((g: Graph) => {
@@ -144,6 +149,7 @@ export default function GraphWindow() {
 
         let activeGraph = graph;
         if (graph.activeVertices.length > 0) activeGraph = graph.getSubgraph(graph.activeVertices);
+        else return;
 
         // find induced forbidden subgraphs
         const timeStartLook = new Date();
@@ -234,11 +240,11 @@ export default function GraphWindow() {
             </div>
             <div className="flex flex-row h-screen">
                 {graph && saveData &&
-                    <GraphEditor windowType="main" height={75} graph={graph} saveData={saveData}
+                    <GraphEditor windowType="main" height={100} graph={graph} saveData={saveData}
                                  saveDataSave={saveDataSave}
                                  update={update} updateSet={updateSet} setGraphActive={setGraphActive}/>}
                 {forbidden && saveData &&
-                    <GraphEditor windowType="forbidden" height={25} graph={forbidden} saveData={saveData}
+                    <GraphEditor windowType="forbidden" height={0} graph={forbidden} saveData={saveData}
                                  saveDataSave={saveDataSave}
                                  update={update} updateSet={updateSet} setGraphActive={setGraphActive}/>}
 
@@ -393,7 +399,7 @@ export function GraphEditor({
         }
     }, []);
 
-    const exportSelection = useCallback((svg: SVGSVGElement, graph: Graph, selectedVertices: number[]) => {
+    const exportVisible = useCallback(async (svg: SVGSVGElement, graph: Graph, selectedVertices: number[], asPng=true) => {
         if (!svg) return;
         let filename = graph.name;
 
@@ -402,32 +408,77 @@ export function GraphEditor({
 
         // SVG namespace
         clone.setAttribute("xmlns", "http://www.w3.org/2000/svg");
+        clone.removeAttribute("class");
+
+        // get bounding box
+        const box = graph.getBoundingVerticesSubgraph(selectedVertices);
+        if(!box) return;
+        let xMin = box.leftMost.position.x - (box.leftMost.style?.radius??0) - (box.leftMost.svg?.width ?? 0);
+        let xMax = box.rightMost.position.x + (box.rightMost.style?.radius??0) + (box.rightMost.svg?.width ?? 0);
+
+        let yMin = box.upperMost.position.y - (box.upperMost.style?.radius??0) - (box.upperMost.svg?.height ?? 0);
+        let yMax = box.bottomMost.position.y + (box.bottomMost.style?.radius??0) + (box.bottomMost.svg?.height ?? 0);
+
+        const bbox = {
+            x: Math.round((xMin + xMax) / 2),
+            y: Math.round((yMin + yMax) / 2),
+
+            width: Math.round((xMax - xMin) * 1.1 + 5),
+            height: Math.round((yMax - yMin) * 1.1 + 5),
+        };
 
         // filter vertices and edges: only selected (active) vertices
-        if (selectedVertices.length > 0) {
-            filename += '-subgraph-' + selectedVertices.join(',');
+        filename += '-subgraph-' + selectedVertices.length;
 
-            // remove vertices not selected
-            clone.querySelectorAll("[data-vertex]").forEach(el => {
-                const id = Number(el.getAttribute("data-vertex"));
-                if (!selectedVertices.includes(id)) {
-                    el.remove();
-                }
-            });
+        // remove vertices not selected
+        clone.querySelectorAll("[data-vertex]").forEach(el => {
+            const id = Number(el.getAttribute("data-vertex"));
+            if (!selectedVertices.includes(id)) {
+                el.remove();
+                return;
+            }
+            el.removeAttribute("data-vertex");
+            el.removeAttribute("pointer-events");
+        });
 
-            // remove edges not fully inside selection
-            clone.querySelectorAll("[data-edge-from]").forEach(el => {
-                const from = Number(el.getAttribute("data-edge-from"));
-                const to = Number(el.getAttribute("data-edge-to"));
+        // move other stuff
+        clone.querySelectorAll(".select-none").forEach(el => {
+            el.removeAttribute("class");
+        });
 
-                if (!selectedVertices.includes(from) || !selectedVertices.includes(to)) {
-                    el.remove();
-                }
-            });
-        }
+        // remove edges not fully inside selection
+        clone.querySelectorAll("[data-edge-from]").forEach(el => {
+            const from = Number(el.getAttribute("data-edge-from"));
+            const to = Number(el.getAttribute("data-edge-to"));
+
+            if (!selectedVertices.includes(from) || !selectedVertices.includes(to)) {
+                el.remove();
+            }
+
+            el.removeAttribute("data-edge-from");
+            el.removeAttribute("data-edge-to");
+            el.removeAttribute("pointer-events");
+        });
 
         // remove UI
         clone.querySelectorAll("[data-ui]").forEach(el => el.remove());
+
+        // set bounding box
+        const world = clone.querySelector("#svgWorldRef") as SVGGElement;
+        if (!world) return;
+        world.removeAttribute("transform");
+
+        console.log(bbox);
+        clone.setAttribute(
+            "viewBox",
+            `${bbox.x - bbox.width/2} ${bbox.y-bbox.height/2} ${bbox.width} ${bbox.height}`
+        );
+        clone.setAttribute("width", `${bbox.width}`);
+        clone.setAttribute("height", `${bbox.height}`);
+        /*world.setAttribute(
+            "transform",
+            `translate(${-bbox.x}, ${-bbox.y})`
+        );*/
 
         // serialize SVG
         const serializer = new XMLSerializer();
@@ -439,14 +490,58 @@ export function GraphEditor({
 
         // trigger save dialog
         const url = URL.createObjectURL(blob);
-        const a = document.createElement("a");
-        a.href = url;
-        a.download = filename;
-        document.body.appendChild(a);
-        a.click();
 
-        document.body.removeChild(a);
-        URL.revokeObjectURL(url);
+        // export as SVG
+        if(!asPng) {
+            const a = document.createElement("a");
+            a.href = url;
+            a.download = filename;
+            document.body.appendChild(a);
+            a.click();
+
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+        }
+        // export as PNG
+        else {
+            const scale = 1.5;
+
+            // load SVG into Image
+            const img = new Image();
+            img.crossOrigin = "anonymous";
+
+            await new Promise<void>((resolve, reject) => {
+                img.onload = () => resolve();
+                img.onerror = reject;
+                img.src = url;
+            });
+
+            // create canvas
+            const canvas = document.createElement("canvas");
+            canvas.width = img.width * scale;
+            canvas.height = img.height * scale;
+
+            const ctx = canvas.getContext("2d")!;
+            ctx.scale(scale, scale);
+            ctx.drawImage(img, 0, 0);
+
+            URL.revokeObjectURL(url);
+
+            // export PNG
+            canvas.toBlob(blob => {
+                if (!blob) return;
+                const pngUrl = URL.createObjectURL(blob);
+
+                const a = document.createElement("a");
+                a.href = pngUrl;
+                a.download = filename + ".png";
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+
+                URL.revokeObjectURL(pngUrl);
+            }, "image/png");
+        }
     }, []);
 
     const keyboardFunctionEdgesToggle = useCallback((graph: Graph, from: Vertex, to: Vertex) => {
@@ -532,7 +627,34 @@ export function GraphEditor({
         for (const vId of graph.activeVertices) {
             const vertex = graph.vertexGet(vId);
             if (!vertex) continue;
-            vertex.disabled = !vertex.disabled;
+
+            const toDisable = [];
+            const toEnable = [];
+            for(const nid of vertex.neighbors) {
+                if(vId >= nid) continue;
+                if(!graph.activeVertices.includes(nid)) continue;
+                toDisable.push(nid);
+            }
+            for(const nid of vertex.neighborsRemoved) {
+                if(vId >= nid) continue;
+                if(!graph.activeVertices.includes(nid)) continue;
+                toEnable.push(nid);
+            }
+
+            for(const nid of toDisable) {
+                const neighbor = graph.vertexGet(nid);
+                if(!neighbor) continue;
+                graph.edgeRemove(vertex, neighbor);
+                vertex.neighborsRemoved.add(nid);
+            }
+            for(const nid of toEnable) {
+                const neighbor = graph.vertexGet(nid);
+                if(!neighbor) continue;
+                graph.edgeAdd(vertex, neighbor);
+                vertex.neighborsRemoved.delete(nid);
+            }
+
+            // vertex.disabled = !vertex.disabled;
             ++vertex.version;
         }
         updateSet(new Date());
@@ -608,6 +730,7 @@ export function GraphEditor({
             // delete currently selected vertices / edges
             if (e.key === "Delete" || e.key === "x") {
                 if(!EventKeyboardCanFire(e, true)) return;
+                if(e.ctrlKey) return;
                 keyboardDeleteSelection(graph);
                 saveDataSave();
             }
@@ -619,6 +742,11 @@ export function GraphEditor({
                 if (!e.ctrlKey && !e.shiftKey) {
                     graph.savedVerticesSet([...graph.activeVertices]);
                     updateSet(new Date());
+                    e.preventDefault();
+                }
+                // prevent Ctrl+S save dialogue
+                else if(e.ctrlKey && e.shiftKey) {
+                    exportVisible(svgRef.current!, graph, graph.verticesVisible.map(v => v.id), e.altKey);
                     e.preventDefault();
                 }
                 // prevent Ctrl+S save dialogue
@@ -664,17 +792,17 @@ export function GraphEditor({
 
                 const selectedGraph = graph.getSubgraphAlgorithm(graph.activeVertices);
 
-                const boundingBox = selectedGraph.getBoundingVerticesSubgraph(graph.activeVertices);
+                const boundingBox = selectedGraph.getBoundingVerticesSubgraph(graph.activeVertices)!;
                 const center = new Vector2(
-                    (boundingBox.leftMost?.position.x + boundingBox.rightMost?.position.x) / 2,
-                    (boundingBox.upperMost?.position.y + boundingBox.bottomMost?.position.y) / 2
+                    (boundingBox.leftMost.position.x + boundingBox.rightMost.position.x) / 2,
+                    (boundingBox.upperMost.position.y + boundingBox.bottomMost.position.y) / 2
                 );
-                const width = boundingBox.rightMost?.position.x - boundingBox.leftMost?.position.x
+                const width = boundingBox.rightMost.position.x - boundingBox.leftMost.position.x;
 
                 const now = new Date();
                 for(let k=0; k<50; ++k) {
-                    const solutionList = selectedGraph.overlappingClusterEditingEnumerate(2, k);
-                    if(solutionList.length) {
+                    const solutionList = e.shiftKey ? [...selectedGraph.overlappingSolutionsSEqualsTwoBranchAndBound(k)] : selectedGraph.overlappingClusterEditingEnumerate(2, k);
+                    if(solutionList.length > 0) {
                         console.log('found overlapping cluster solution with k=',k, solutionList, ' in ',new Date()-now, 'ms');
                         let i = 0;
                         for(const solution of solutionList) {
@@ -728,7 +856,7 @@ export function GraphEditor({
                 // align
                 if(e.altKey) {
                     const bounds = graph.getBoundingVerticesSubgraph(graph.savedSelection);
-                    if(!bounds.leftMost || !bounds.rightMost || !bounds.upperMost || !bounds.bottomMost) return;
+                    if(!bounds) return;
 
                     // align to extreme value
                     let getterBoundFunction: (bounds: BoundingVertices) => Vertex|undefined;
@@ -764,7 +892,8 @@ export function GraphEditor({
                         // apply aggregate to components
                         for(const component of componentsSelected) {
                             // find most extreme vertex
-                            const boundsComponent: BoundingVertices = graph.getBoundingVerticesSubgraph(component.getVertexIDs());
+                            const boundsComponent = graph.getBoundingVerticesSubgraph(component.getVertexIDs());
+                            if(!boundsComponent) continue;
                             const boundComponent = getterBoundFunction(boundsComponent);
                             if(!boundComponent) continue;
 
@@ -804,8 +933,8 @@ export function GraphEditor({
 
                         // apply aggregate to selection
                         // find most extreme vertex
-                        const boundsComponent: BoundingVertices = graph.getBoundingVerticesSubgraph(graph.activeVertices);
-                        if(!boundsComponent.leftMost || !boundsComponent.rightMost || !boundsComponent.upperMost || !boundsComponent.bottomMost) return;
+                        const boundsComponent = graph.getBoundingVerticesSubgraph(graph.activeVertices);
+                        if(!boundsComponent) return;
 
                         // move center of component to center of aggregate
                         const positionOld = new Vector2(
@@ -882,7 +1011,7 @@ export function GraphEditor({
         window.addEventListener("keydown", onKey);
         return () => window.removeEventListener("keydown", onKey);
     }, [graph, saveDataSave,
-        keyboardDeleteSelection, exportSelection, keyboardEdges, keyboardDisableSelection,
+        keyboardDeleteSelection, exportVisible, keyboardEdges, keyboardDisableSelection,
         keyboardToggleShowOverlappingForbidden, keyboardCriticalCliques, keyboardMaximalCliques
     ]);
 
@@ -973,6 +1102,26 @@ export function GraphEditor({
                         graph: graph.getSubgraph(graph.activeVertices),
                         mouseWorld: screenToWorld(mouseLast.screen),
                     });
+                }
+            }
+            // "P": parse
+            else if (e.key === "p" || e.key === "P") {
+                if(!EventKeyboardCanFire(e)) return;
+
+                const list = [
+                    "I???C@ozo",
+                ];
+
+                let x = 0;
+                for(const g6 of list) {
+                    const graphAdd = Graph.parseGraph6(g6);
+                    graphAdd.forceApply(0.01, 150, 2.5, 0.4);
+                    graph.addSubgraph(graphAdd, new Vector2(0,0), screenToWorld(mouseLast.screen).plus(new Vector2(x, 0)));
+
+                    const bounds = graphAdd.getBoundingVerticesSubgraph(graphAdd.getVertexIDs());
+                    if(bounds) {
+                        x += bounds.rightMost.position.x - bounds.leftMost.position.x + 30;
+                    }
                 }
             }
             // paste / add vertex
@@ -1321,10 +1470,12 @@ export function GraphEditor({
                     }
                 }
 
-                v.position = pos;
-                ++v.version;
                 graph.setHulls(graph.cliquesMaximal);
                 graph.setHulls(graph.cliquesCritical, 3);
+                ++graph.cliquesVersion;
+                ++graph.cliquesCriticalVersion;
+                v.position = pos;
+                ++v.version;
                 updateSet(new Date());
             }
         }
@@ -1414,6 +1565,12 @@ export function GraphEditor({
         updateSet(new Date());
     }, [graph]);
 
+    const renderOverlappingForbiddenPressButton = useCallback((e: React.MouseEvent, graph: Graph, vertices: number[]) => {
+        graph.activeVerticesSet([...vertices]);
+        updateSet(new Date());
+        e.stopPropagation();
+    }, []);
+
     const renderOverlappingForbidden = useCallback((graph: Graph) => {
         if (!graph || !showOverlappingForbidden) return [];
         const activeVertices = graph.activeVertices;
@@ -1473,27 +1630,24 @@ export function GraphEditor({
 
         return {
             forbidden: overlappingData.forbidden.map((ownVertices: number[], index: number) => {
-                return <button key={index} className="block border-b w-full cursor" onClick={() => {
-                    graph.activeVerticesSet([...ownVertices]);
-                    updateSet(new Date());
+                return <button key={index} className="block border-b w-full cursor" onMouseDown={e => {
+                    renderOverlappingForbiddenPressButton(e, graph, ownVertices);
                 }}>
                     <span className="font-bold mr-2">{activeVerticesString}</span>
                     <span>{ownVertices.filter(v => !activeVertices.includes(v)).join(',')}</span>
                 </button>
             }),
             forbiddenNot: overlappingData.forbiddenNot.map((ownVertices: number[], index: number) => {
-                return <button key={index} className="block border-b w-full cursor" onClick={() => {
-                    graph.activeVerticesSet([...ownVertices]);
-                    updateSet(new Date());
+                return <button key={index} className="block border-b w-full cursor" onMouseDown={e => {
+                    renderOverlappingForbiddenPressButton(e, graph, ownVertices);
                 }}>
                     <span>{ownVertices.join(',')}</span>
                 </button>
             }),
             cliques: overlappingData.cliques.map((set, index: number) => {
                 const ownVertices = Array.from(set.clique);
-                return <button key={index} className="block border-b w-full cursor" onClick={() => {
-                    graph.activeVerticesSet([...ownVertices]);
-                    updateSet(new Date());
+                return <button key={index} className="block border-b w-full cursor" onMouseDown={e => {
+                    renderOverlappingForbiddenPressButton(e, graph, ownVertices);
                 }}>
                     <span className="font-bold mr-2">{activeVerticesString}</span>
                     <span>{ownVertices.filter(v => !activeVertices.includes(v)).join(',')}</span>
@@ -1501,18 +1655,16 @@ export function GraphEditor({
             }),
             cliquesNot: overlappingData.cliquesNot.map((set, index: number) => {
                 const ownVertices = Array.from(set.clique);
-                return <button key={index} className="block border-b w-full cursor" onClick={() => {
-                    graph.activeVerticesSet([...ownVertices]);
-                    updateSet(new Date());
+                return <button key={index} className="block border-b w-full cursor" onMouseDown={e => {
+                    renderOverlappingForbiddenPressButton(e, graph, ownVertices);
                 }}>
                     <span>{ownVertices.join(',')}</span>
                 </button>
             }),
             cliquesCritical: overlappingData.cliquesCritical.map((set, index: number) => {
                 const ownVertices = Array.from(set.clique);
-                return <button key={index} className="block border-b w-full cursor" onClick={() => {
-                    graph.activeVerticesSet([...ownVertices]);
-                    updateSet(new Date());
+                return <button key={index} className="block border-b w-full cursor" onMouseDown={e => {
+                    renderOverlappingForbiddenPressButton(e, graph, ownVertices);
                 }}>
                     <span className="font-bold mr-2">{activeVerticesString}</span>
                     <span>{ownVertices.filter(v => !activeVertices.includes(v)).join(',')}</span>
@@ -1520,15 +1672,14 @@ export function GraphEditor({
             }),
             cliquesCriticalNot: overlappingData.cliquesCriticalNot.map((set, index: number) => {
                 const ownVertices = Array.from(set.clique);
-                return <button key={index} className="block border-b w-full cursor" onClick={() => {
-                    graph.activeVerticesSet([...ownVertices]);
-                    updateSet(new Date());
+                return <button key={index} className="block border-b w-full cursor" onMouseDown={e => {
+                    renderOverlappingForbiddenPressButton(e, graph, ownVertices);
                 }}>
                     <span>{ownVertices.join(',')}</span>
                 </button>
             }),
         }
-    }, [update, overlappingData, showOverlappingForbidden]);
+    }, [update, overlappingData, showOverlappingForbidden, renderOverlappingForbiddenPressButton]);
 
     const renderEdges = useCallback((graph: Graph) => {
         const lines: JSX.Element[] = [];
@@ -1739,7 +1890,13 @@ export function GraphEditor({
                     <button className="mr-1 tooltip">
                         <kbd>S</kbd>
                         <div className="tooltiptext p-3" style={{width: "400px"}}>
-                            <kbd>S</kbd> set this current selection as your <b>saved selection</b>. Other keyboard shortcuts depend on the saved selection.
+                            <kbd>S</kbd> set this current selection as your <b>saved selection</b>. Other keyboard
+                            shortcuts depend on the saved selection.
+                            <br/><br/>
+                            <kbd>Ctrl+S</kbd> save the current graph and viewport.
+                            <br/><br/>
+                            <kbd>Ctrl+Shift+S</kbd> export the currently visible graph as an SVG. Add <kbd>Alt</kbd> to
+                            instead export to PNG.
                         </div>
                     </button>
 
@@ -1785,11 +1942,7 @@ export function GraphEditor({
                     ref={svgRef}
                     className="relative h-full w-full"
                 >
-                    <style>
-                        {".katex-html {display: none;}"}
-                    </style>
-
-                    <g ref={worldRef} transform={`translate(${view.pan.x}, ${view.pan.y}) scale(${view.zoom})`}>
+                    <g ref={worldRef} id="svgWorldRef" transform={`translate(${view.pan.x}, ${view.pan.y}) scale(${view.zoom})`}>
                         <CliquesRender graph={graph}
                                        cliques={overlappingData.cliques} cliquesNot={overlappingData.cliquesNot}
                                        cliquesCritical={overlappingData.cliquesCritical} cliquesCriticalNot={overlappingData.cliquesCriticalNot}
@@ -2378,6 +2531,8 @@ const CliquesRender = React.memo((props: {
 
     const clickClique = useCallback((e: React.MouseEvent<SVGPathElement>, clique: SubgraphWithHull, i: number, list: SubgraphWithHull[]) => {
         if(e.shiftKey) return;
+        // ignore middle / right click
+        if(e.button !== 0) return;
 
         // move to the back in the list
         list.splice(i, 1);
@@ -2601,7 +2756,8 @@ const VertexRender = React.memo((props: {
             />}
             {v.label?.includes('$') ?
                 (v.svg ?
-                    <g transform={`translate(${v.position.x - scale * v.svg.width / 2}, ${v.position.y - scale * v.svg.height / 2}) scale(${scale})`}>
+                    <g
+                       transform={`translate(${v.position.x - scale * v.svg.width / 2}, ${v.position.y - scale * v.svg.height / 2}) scale(${scale})`}>
                         <rect
                             data-ui="true"
                             fill="#ffffff00"
