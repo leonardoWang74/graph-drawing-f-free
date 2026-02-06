@@ -18,8 +18,8 @@ int main() {
     std::string line;
 
     OverlappingEditingOptions optionsProposition = {
-        .useFellowsForbidden = true,
-        .forbidCriticalCliques = false, // even if every one works, the "random" selection of forbidden subgraph doesn't guarantee this always works
+        .useFellowsForbidden = false,
+        .forbidCriticalCliques = true, // even if every one works, the "random" selection of forbidden subgraph doesn't guarantee this always works
         .forbidCliques = false, // counterexample: "2"-star triangles I???CB{{w - maybe this will never work
         .noNeighborProposition = false,
     };
@@ -48,7 +48,7 @@ int main() {
             continue;
         }*/
         // critical cliques skip
-        if(G.n()==10 && graphsCount < 1548011 && optionsProposition.forbidCriticalCliques && !optionsProposition.useFellowsForbidden) {
+        if(G.n()==10 && graphsCount < 2196214 && optionsProposition.forbidCriticalCliques && !optionsProposition.useFellowsForbidden) {
             std::cout << "Skipping graph: already did it\n";
             continue;
         }
