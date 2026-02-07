@@ -467,6 +467,7 @@ export function GraphEditor({
         const world = clone.querySelector("#svgWorldRef") as SVGGElement;
         if (!world) return;
         world.removeAttribute("transform");
+        const zoom = +(world.getAttribute("data-zoom") ?? 1);
 
         console.log(bbox);
         clone.setAttribute(
@@ -504,7 +505,7 @@ export function GraphEditor({
         }
         // export as PNG
         else {
-            const scale = 1.5;
+            const scale = zoom * 2;
 
             // load SVG into Image
             const img = new Image();
@@ -1109,7 +1110,7 @@ export function GraphEditor({
                 if(!EventKeyboardCanFire(e)) return;
 
                 const list = [
-                    "I???C@ozo",
+                    "I?`DdfKQw",
                 ];
 
                 let x = 0;
@@ -1274,6 +1275,10 @@ export function GraphEditor({
         worldRef.current.setAttribute(
             "transform",
             `translate(${view.pan.x}, ${view.pan.y}) scale(${view.zoom})`
+        );
+        worldRef.current.setAttribute(
+            "data-zoom",
+            `${view.zoom}`
         );
     }, []);
 

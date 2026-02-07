@@ -12,16 +12,17 @@
 void testGraph() {
     OverlappingEditingOptions options = {
         .useFellowsForbidden = true,
+        .useForbiddenCliques = false,
         .forbidCriticalCliques = false,
-        .noNeighborProposition = false,
+        .noSharedNeighborProposition = false,
         .forbiddenTakeFirst = true,
     };
 
-    // normal solution k=4: Solution: Edges Added:[[1,2,4]], Edges Removed:[[4,9,3],[5,9,2],[6,9,1]]
+    // normal solution k=3: Solution: Edges Added:[[2,3,3],[0,9,2]], Edges Removed:[[1,9,1]]
 
-    // Graph G = Graph::parse_graph6("I???C@ozo");
+    Graph G = Graph::parse_graph6("I?`DdfKQw");
 
-    Graph G = Graph(12);
+    /*Graph G = Graph(12);
     // add clique on the first 3 vertices
     G.edge_add(0, 1);
     G.edge_add(0, 2);
@@ -31,7 +32,7 @@ void testGraph() {
         G.edge_add(0, i);
         G.edge_add(1, i);
         G.edge_add(2, i);
-    }
+    }*/
 
     std::cout << "Parsing graph success with " << G.n() << " vertices and " << G.m() << " edges \n";
     std::cout << "Edges"<<Graph::vector_tostring(G.edges)<<"\n";
@@ -55,13 +56,13 @@ void testGraph() {
     std::cout << "vertex clique maps: "<<Graph::vector_tostring(cliqueInfo.vertexCliques)<<"\n";
     std::cout << "\n";
 
-    // const int kBound = 4;
-    const int kBound = G.n() * G.n();
+    const int kBound = 3;
+    // const int kBound = G.n() * G.n();
 
     auto bound = G.overlappingClusterEditingLowerBound(2, -1, options);
     std::cout << "Lower bound="<<bound<<"\n";
 
-    for(int k=4; k<=kBound; ++k) {
+    for(int k=0; k<=kBound; ++k) {
         std::cout << "k="<<k<<"\n";
         auto overlappingSolutions = G.overlappingClusterEditingSolutionsBranchAndBound(2, k, options, 0);
         if(overlappingSolutions.size() == 0) {
@@ -84,7 +85,7 @@ void testGraph() {
 
 void testStars() {
     OverlappingEditingOptions options = {
-        .noNeighborProposition = false,
+        .noSharedNeighborProposition = false,
         .forbiddenTakeFirst = true,
     };
 

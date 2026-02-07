@@ -41,12 +41,12 @@ long TimeDifference(const int& start) {
 #endif
 
 std::string OverlappingEditingOptionsToString(const OverlappingEditingOptions& options) {
-    return "Options{noNeighborProposition=" + std::to_string(options.noNeighborProposition) + ", "
+    return "Options{noNeighborProposition=" + std::to_string(options.noSharedNeighborProposition) + ", "
 
         + "forbiddenMatrix=" + std::to_string(options.forbiddenMatrix) + ", "
         + "forbiddenCopy=" + std::to_string(options.forbiddenCopy) + ", "
 
-        + "forbiddenTakeFirst=" + std::to_string(options.forbiddenTakeFirst) + ", "
+        + "forbiddenMaxCount=" + std::to_string(options.forbiddenMaxCount) + ", "
 
         + "\n\ttimeTotal=" + std::to_string(options.timeTotal) + "µs, "
         + "timeFindingCliques=" + std::to_string(options.timeFindingCliques) + "µs, "
@@ -459,6 +459,8 @@ std::vector<EdgeEdit> overlappingSolutionsFilterForbiddenEdits(Graph* G, Overlap
             if(Graph::sorted_contains(forbidden[edit.from], edit.to)) continue;
         }
 
+        // do not branch on adding an edge to a vertex with only one neighbor
+
         // std::cout << __FILE__<<":"<<__LINE__<<" filtering edit from="<<edit.from<<" to="<<edit.to<<"\n";
         filtered.push_back(edit);
     }
@@ -471,7 +473,7 @@ void overlappingSolutionsPropositionEdgeAdds(
     int vVertex, int wVertex, int xVertex
 ) {
     // branch on adding edges between leaves only if they have common neighbors (except u)
-    if(options.noNeighborProposition) {
+    if(options.noSharedNeighborProposition) {
         auto start = TimeNow();
 
         auto& vNeighbors = G->neighbors(vVertex);
@@ -512,6 +514,278 @@ void overlappingSolutionsPropositionEdgeAdds(
         editsUnfiltered.push_back({from: vVertex, to: wVertex, add: true});
         editsUnfiltered.push_back({from: vVertex, to: xVertex, add: true});
         editsUnfiltered.push_back({from: wVertex, to: xVertex, add: true});
+    }
+}
+
+void overlappingClusterEditingFindForbiddenInU(Graph* G, size_t s, int k, OverlappingEditingOptions& options, int uVertex,
+    std::vector<std::vector<int>>& forbidden,
+    std::vector<std::vector<int>>& edgesAdded, std::vector<std::vector<int>>& edgesRemoved,
+    bool& branchingEditsFoundSubgraph, bool& branchingEditsFound, std::vector<EdgeEdit>& branchingEdits
+) {
+    // number of forbidden subgraphs found
+    int branchingFoundCount = 0;
+
+    const auto neighborSet = G->neighbors(uVertex);
+    const auto neighborList = std::vector<int>(neighborSet.begin(), neighborSet.end());
+    const auto degree = neighborList.size();
+
+    // u needs at least s+1 neighbors
+    if (degree <= s) return;
+
+    for(size_t vIndex=0; vIndex<degree; ++vIndex) {
+        const auto vVertex = neighborList[vIndex];
+        const auto vNeighbors = G->neighbors(vVertex);
+
+        for(size_t wIndex=vIndex+1; wIndex<degree; ++wIndex) {
+            const auto wVertex = neighborList[wIndex];
+
+            const bool edgeVW = G->edge_has(vVertex, wVertex);
+
+            for(size_t xIndex=wIndex+1; xIndex<degree; ++xIndex) {
+                const auto xVertex = neighborList[xIndex];
+
+                const bool edgeVX =  G->edge_has(vVertex, xVertex);
+                const bool edgeWX =  G->edge_has(wVertex, xVertex);
+
+                // found a claw
+                if(!edgeVW && !edgeVX && !edgeWX) {
+                    std::vector<EdgeEdit> editsUnfiltered = {
+                        // remove edges from u
+                        {from: uVertex, to: vVertex, add: false},
+                        {from: uVertex, to: wVertex, add: false},
+                        {from: uVertex, to: xVertex, add: false},
+
+                        // add edges
+                        /*{from: vVertex, to: wVertex, add: true},
+                        {from: vVertex, to: xVertex, add: true},
+                        {from: wVertex, to: xVertex, add: true},*/
+                    };
+                    overlappingSolutionsPropositionEdgeAdds(G, editsUnfiltered, options, vVertex, wVertex, xVertex);
+
+                    auto edits = overlappingSolutionsFilterForbiddenEdits(G, options, forbidden, editsUnfiltered);
+                    branchingEditsFoundSubgraph = true;
+                    ++branchingFoundCount;
+                    // std::cout << __FILE__<<":"<<__LINE__<<" edits filtered to: size="<<edits.size()<<"\n";
+                    if(edits.size() > 0 && (!branchingEditsFound || edits.size() < branchingEdits.size())) {
+                        branchingEdits = edits;
+                        branchingEditsFound = true;
+#ifdef DEBUG
+                        branchingForbiddenName = "F1 (Claw) in " + Graph::vector_tostring_value({uVertex, vVertex, wVertex, xVertex});
+#endif
+                        if(branchingFoundCount >= options.forbiddenMaxCount || (edgesAdded.size() == 0 && edgesRemoved.size() == 0)) {
+                            vIndex = degree;
+                            wIndex = degree;
+                            break;
+                        }
+                    }
+
+                    // cannot find F2 or F3 when there is a claw
+                    // continue; // but could find another F1
+                }
+                
+                // F1,F2,F3 don't have a triangle
+                if(edgeVW && edgeWX && edgeVX) continue;
+
+                for(size_t yIndex=xIndex+1; yIndex<degree; ++yIndex) {
+                    const auto yVertex = neighborList[yIndex];
+
+                    const std::vector<int> subgraphVertices = {vVertex, wVertex, xVertex, yVertex};
+                    const auto subgraph = G->getSubgraph(subgraphVertices);
+
+                    // too few/many edges
+                    if(subgraph.m() < 3 || subgraph.m() > 4) continue;
+
+                    const auto vDegree = subgraph.degree(0);
+                    const auto wDegree = subgraph.degree(1);
+                    const auto xDegree = subgraph.degree(2);
+                    const auto yDegree = subgraph.degree(3);
+
+                    // no edges = no F1, F2, F3
+                    if(vDegree==0 || wDegree==0 || xDegree==0 || yDegree==0) continue;
+
+                    std::vector<EdgeEdit> editsUnfiltered;
+#ifdef DEBUG
+                    std::string branchingForbiddenNameMaybe = "";
+#endif
+
+                    // F1: found a claw in the 4 vertices if edgeCount = 3
+                    if(vDegree==3) {
+                        if(subgraph.m() > 3) continue;
+                        editsUnfiltered = {
+                            // remove edges from claw center
+                            {from: vVertex, to: wVertex, add: false},
+                            {from: vVertex, to: xVertex, add: false},
+                            {from: vVertex, to: yVertex, add: false},
+
+                            // add edges between claw leaves
+                            /*{from: wVertex, to: xVertex, add: true},
+                            {from: wVertex, to: yVertex, add: true},
+                            {from: xVertex, to: yVertex, add: true},*/
+                        };
+                        overlappingSolutionsPropositionEdgeAdds(G, editsUnfiltered, options, wVertex, xVertex, yVertex);
+#ifdef DEBUG
+                        branchingForbiddenNameMaybe = "F1 (Claw) in 4 vertices in " + Graph::vector_tostring_value({vVertex, wVertex, xVertex, yVertex});
+#endif
+                    }
+                    else if(wDegree==3) {
+                        if(subgraph.m() > 3) continue;
+                        editsUnfiltered = {
+                            // remove edges from claw center
+                            {from: wVertex, to: vVertex, add: false},
+                            {from: wVertex, to: xVertex, add: false},
+                            {from: wVertex, to: yVertex, add: false},
+
+                            // add edges between claw leaves
+                            /*{from: vVertex, to: xVertex, add: true},
+                            {from: vVertex, to: yVertex, add: true},
+                            {from: xVertex, to: yVertex, add: true},*/
+                        };
+                        overlappingSolutionsPropositionEdgeAdds(G, editsUnfiltered, options, vVertex, xVertex, yVertex);
+#ifdef DEBUG
+                        branchingForbiddenNameMaybe = "F1 (Claw) in 4 vertices in " + Graph::vector_tostring_value({wVertex, vVertex, xVertex, yVertex});
+#endif
+                    }
+                    else if(xDegree==3) {
+                        if(subgraph.m() > 3) continue;
+                        editsUnfiltered = {
+                            // remove edges from claw center
+                            {from: xVertex, to: vVertex, add: false},
+                            {from: xVertex, to: wVertex, add: false},
+                            {from: xVertex, to: yVertex, add: false},
+
+                            // add edges between claw leaves
+                            /*{from: vVertex, to: wVertex, add: true},
+                            {from: vVertex, to: yVertex, add: true},
+                            {from: wVertex, to: yVertex, add: true},*/
+                        };
+                        overlappingSolutionsPropositionEdgeAdds(G, editsUnfiltered, options, vVertex, wVertex, yVertex);
+#ifdef DEBUG
+                        branchingForbiddenNameMaybe = "F1 (Claw) in 4 vertices in " + Graph::vector_tostring_value({xVertex, vVertex, wVertex, yVertex});
+#endif
+                    }
+                    else if(yDegree==3) {
+                        if(subgraph.m() > 3) continue;
+                        editsUnfiltered = {
+                            // remove edges from claw center
+                            {from: yVertex, to: vVertex, add: false},
+                            {from: yVertex, to: wVertex, add: false},
+                            {from: yVertex, to: xVertex, add: false},
+
+                            // add edges between claw leaves
+                            /*{from: vVertex, to: wVertex, add: true},
+                            {from: vVertex, to: xVertex, add: true},
+                            {from: wVertex, to: xVertex, add: true},*/
+                        };
+                        overlappingSolutionsPropositionEdgeAdds(G, editsUnfiltered, options, vVertex, wVertex, xVertex);
+#ifdef DEBUG
+                        branchingForbiddenNameMaybe = "F1 (Claw) in 4 vertices in " + Graph::vector_tostring_value({yVertex, vVertex, wVertex, xVertex});
+#endif
+                    }
+
+                    // F2: 3 edges, no vertices with degree = 0 or degree = 3
+                    else if (subgraph.m() == 3) {
+                        // get the P_4 path: have to start at a vertex with degree = 1
+                        std::vector<int> walk;
+                        if(vDegree==1) {
+                            walk = subgraph.getAnyWalk(0, 4);
+                        }
+                        else if(wDegree==1) {
+                            walk = subgraph.getAnyWalk(1, 4);
+                        }
+                        else if(xDegree==1) {
+                            walk = subgraph.getAnyWalk(2, 4);
+                        }
+                        else {
+                            walk = subgraph.getAnyWalk(3, 4);
+                        }
+
+                        editsUnfiltered = {
+                            // remove edges from u
+                            {from: uVertex, to: vVertex, add: false},
+                            {from: uVertex, to: wVertex, add: false},
+                            {from: uVertex, to: xVertex, add: false},
+                            {from: uVertex, to: yVertex, add: false},
+
+                            // remove center bottom edge
+                            {from: subgraph.id_get(walk[1]), to: subgraph.id_get(walk[2]), add: false},
+
+                            // add edges between P4
+                            {from: subgraph.id_get(walk[0]), to: subgraph.id_get(walk[2]), add: true},
+                            {from: subgraph.id_get(walk[1]), to: subgraph.id_get(walk[3]), add: true},
+
+                            // do not branch on v,y - spare this edge
+                            // {from: subgraph.id_get(walk[0]), to: subgraph.id_get(walk[3]), add: true},
+
+                            // remove other bottom edges (lead to F1 but we can only spare one edit, which is the v,y added edge)
+                            // do these edits only at the end
+                            {from: subgraph.id_get(walk[0]), to: subgraph.id_get(walk[1]), add: false},
+                            {from: subgraph.id_get(walk[2]), to: subgraph.id_get(walk[3]), add: false},
+                        };
+#ifdef DEBUG
+                        /*if(k==1 && uVertex==0) std::cout << "\t"<< __FILE__<<":"<<__LINE__<<" s="<<s<<" k="<<k<<" finding F2 with u="<<uVertex<<" ids="<<Graph::vector_tostring(subgraph.ids)
+                            <<" walk="<<Graph::vector_tostring(walk)
+                            <<" edgesAdded="<<Graph::vector_tostring(edgesAdded)<<" edgesRemoved="<<Graph::vector_tostring(edgesRemoved)
+                            <<" forbidden="<<Graph::vector_tostring(forbidden)
+                            <<" subgraph edges: "<<Graph::vector_tostring(subgraph.edges)<<"\n";*/
+                        branchingForbiddenNameMaybe = "F2 in " + Graph::vector_tostring_value({uVertex, subgraph.id_get(walk[0]), subgraph.id_get(walk[1]), subgraph.id_get(walk[2]), subgraph.id_get(walk[3])});
+#endif
+                    }
+
+                    // F3: all degrees are exactly 2
+                    else {
+                        const auto walk = subgraph.getAnyWalk(0, 4);
+
+                        /// std::cout << __FILE__<<":"<<__LINE__<<" s="<<s<<" k="<<k<<" walk="<< Graph::vector_tostring(walk)<<" v="<<vVertex<<" w="<<wVertex<<" x="<<xVertex<<" y="<<yVertex<<" id of walk0="<<subgraph.id_get(walk[0])<<"\n";
+                        editsUnfiltered = {
+                            // remove edges from u
+                            {from: uVertex, to: vVertex, add: false},
+                            {from: uVertex, to: wVertex, add: false},
+                            {from: uVertex, to: xVertex, add: false},
+                            {from: uVertex, to: yVertex, add: false},
+
+                            // add edges between C4
+                            {from: subgraph.id_get(walk[0]), to: subgraph.id_get(walk[2]), add: true},
+                            {from: subgraph.id_get(walk[1]), to: subgraph.id_get(walk[3]), add: true},
+
+                            // remove bottom edges (lead to F2 but we can only spare one edit, which is the walk[0]->walk[3] removed edge)
+                            // do these edits only at the end
+                            {from: subgraph.id_get(walk[0]), to: subgraph.id_get(walk[1]), add: false},
+                            {from: subgraph.id_get(walk[1]), to: subgraph.id_get(walk[2]), add: false},
+                            {from: subgraph.id_get(walk[2]), to: subgraph.id_get(walk[3]), add: false},
+                            // {from: subgraph.id_get(walk[0]), to: subgraph.id_get(walk[3]), add: false},
+                        };
+#ifdef DEBUG
+                        branchingForbiddenNameMaybe = "F3 in " + Graph::vector_tostring_value({uVertex, subgraph.id_get(walk[0]), subgraph.id_get(walk[1]), subgraph.id_get(walk[2]), subgraph.id_get(walk[3])});
+#endif
+                    }
+
+                    // filter edits, fix order from < to
+                    auto edits = overlappingSolutionsFilterForbiddenEdits(G, options, forbidden, editsUnfiltered);
+
+#ifdef DEBUG
+                    /*if(k==1 && uVertex==0) std::cout << "\t"<< __FILE__<<":"<<__LINE__<<" s="<<s<<" k="<<k<<" finding F2 with edit size "<<edits.size()
+                            <<" edgesAdded="<<Graph::vector_tostring(edgesAdded)<<" edgesRemoved="<<Graph::vector_tostring(edgesRemoved)
+                            <<" subgraph edges: "<<Graph::vector_tostring(subgraph.edges)<<"\n";*/
+#endif
+                    branchingEditsFoundSubgraph = true;
+                    ++branchingFoundCount;
+                    if(edits.size() > 0 && (!branchingEditsFound || edits.size() < branchingEdits.size())) {
+                        branchingEdits = edits;
+                        branchingEditsFound = true;
+#ifdef DEBUG
+                        branchingForbiddenName = branchingForbiddenNameMaybe;
+#endif
+
+                        if(branchingFoundCount >= options.forbiddenMaxCount || (edgesAdded.size() == 0 && edgesRemoved.size() == 0)) {
+                            vIndex = degree;
+                            wIndex = degree;
+                            xIndex = degree;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -575,14 +849,14 @@ void overlappingClusterEditingSolutionsBranchAndBoundRecursion(
         const auto cliqueCount = std::min(cliquesIndicesOverlappingU.size(), s+1);
 
         // for every pair of cliques, find one separating pair
-        for(size_t i=0; i<cliqueCount; ++i) { // O(s * s * (|cliqueA| + |cliqueB| + |cliqueA|)) = O(s * s * n)) = O(s^2 * n)
+        for(size_t i=0; i<cliqueCount; ++i) { // O(s * s * (|cliqueA| + |cliqueB| + |cliqueA|)) = O(s^n * n)) = O(s^2 * n)
             const auto cliqueA = cliqueInfo.cliqueList.at(cliquesIndicesOverlappingU[i]);
 
             // find separating vertices: O(s * 3n)
             for(size_t j=i+1; j<cliqueCount; ++j) {
                 const auto cliqueB = cliqueInfo.cliqueList.at(cliquesIndicesOverlappingU[j]);
 
-                // vertices in cliqueA but not in cliqueB. Copy in O(|cliqueA|) = O(n)
+                // vertices in cliqueA but not in cliqueB. Copy in O(|cliqueA|)
                 std::unordered_set<int> verticesCliquesInA = 
 #ifndef GRAPH_H_MATRIX_AND_LIST
                     std::unordered_set<int>(cliqueA);
@@ -595,7 +869,7 @@ void overlappingClusterEditingSolutionsBranchAndBoundRecursion(
                 // FALSE if separatorB is a new vertex added to the forbidden subgraph, otherwise TRUE
                 bool separatorBalreadyContains = false;
 
-                // increment overlapping vertices in O(|cliqueB|) = O(n)
+                // increment overlapping vertices in O(|cliqueB|)
                 for(const auto v : cliqueB) {
                     // TRUE if v is in cliqueA
                     const auto inA = verticesCliquesInA.erase(v) > 0;
@@ -617,8 +891,10 @@ void overlappingClusterEditingSolutionsBranchAndBoundRecursion(
                 // FALSE if separatorA is a new vertex added to the forbidden subgraph, otherwise TRUE
                 bool separatorAalreadyContains = false;
 
-                // find separatorA: vertex where verticesCliquesCount[v]=true in O(|cliqueA|) = O(n)
+                // find separatorA: vertex in cliqueA and not in cliqueB in O(|cliqueA|)
                 for(const auto v : verticesCliquesInA) {
+                    if(G->edge_has(v, separatorB)) continue;
+
                     // take if no separator found yet OR found separator doesn't exist in the found subgraph already and this one does
                     // (minimize the size of the forbidden subgraph by choosing the same vertex multiple times if possible)
                     auto alreadyContains = forbiddenVerticesSet.find(v) != forbiddenVerticesSet.end();
@@ -679,9 +955,16 @@ void overlappingClusterEditingSolutionsBranchAndBoundRecursion(
                 editsUnfiltered.push_back({from: v, to: w, add: !G->edge_has(v,w)});
             }
         }
-        /*std::cout << __FILE__<<":"<<__LINE__<<" s="<<s<<" k="<<k<<" u="<<uVertex<<" forbidden vertices="<<Graph::vector_tostring(forbiddenVertices)
+
+        
+#ifdef DEBUG
+        if(edgesAdded.size()>0 && edgesAdded[0][0]==2 && edgesAdded[0][1]==3 && edgesAdded[0][2]==3)
+        std::cout << __FILE__<<":"<<__LINE__<<" s="<<s<<" k="<<k<<" u="<<uVertex<<" forbidden vertices="<<Graph::vector_tostring(forbiddenVertices)
             <<" edgesAdded="<<Graph::vector_tostring(edgesAdded)<<" edgesRemoved="<<Graph::vector_tostring(edgesRemoved)
-            <<"\n";*/
+            <<" cliquesIndicesOverlappingU="<<Graph::vector_tostring(cliquesIndicesOverlappingU)
+            <<" cliques="<<Graph::vector_tostring(cliqueInfo.cliqueList)
+            <<"\n";
+#endif
         // overlappingSolutionsPropositionEdgeAdds(G, editsUnfiltered, options, vVertex, wVertex, xVertex);
 
         auto edits = overlappingSolutionsFilterForbiddenEdits(G, options, forbidden, editsUnfiltered);
@@ -697,6 +980,41 @@ void overlappingClusterEditingSolutionsBranchAndBoundRecursion(
 
         options.timeFindingForbidden += TimeDifference(startLooking);
     }
+    // do not look for cliques, try all vertices with degree > s, look for forbidden subgraph
+    // (spare looking for all maximal cliques)
+    else if(!options.useForbiddenCliques) {
+        auto startLooking = TimeNow();
+
+        for(int i=0; i<n; ++i) {
+            overlappingClusterEditingFindForbiddenInU(G, s, k, options, i, forbidden, edgesAdded, edgesRemoved, 
+                branchingEditsFoundSubgraph, branchingEditsFound, branchingEdits
+            );
+            
+            if(branchingEditsFoundSubgraph) {
+                uVertex = i;
+                break;
+            }
+        }
+        options.timeFindingForbidden += TimeDifference(startLooking);
+
+        // no vertex in more than s cliques: no edits needed
+        if(uVertex < 0) {
+    #ifdef DEBUG
+            std::cout << "\t\t" << __FILE__<<":"<<__LINE__<<" s="<<s<<" k="<<k<<" found solution\n";
+    #endif
+            Graph solution(G);
+            
+            solution.edgesAdded = copyVectorVectorInt(edgesAdded);
+            solution.edgesRemoved = copyVectorVectorInt(edgesRemoved);
+            
+            result.push_back(solution);
+            return;
+        }
+
+        // cannot find a solution since we have no budget left
+        if(k <= 0) return;
+    }
+    // find cliques, look for forbidden subgraph with fixed u
     else {
         auto startCliques = TimeNow();
         int vertexCandidate = G->getVertexInMoreThanSCliques(s);
@@ -732,262 +1050,9 @@ void overlappingClusterEditingSolutionsBranchAndBoundRecursion(
 
         // try to find a forbidden subgraph in $u$ (preferred claw, since there are fewer branches)
         auto startLooking = TimeNow();
-        const auto neighborSet = G->neighbors(vertexCandidate);
-        const auto neighborList = std::vector<int>(neighborSet.begin(), neighborSet.end());
-        const auto degree = neighborList.size();
-        for(size_t vIndex=0; vIndex<degree; ++vIndex) {
-            const auto vVertex = neighborList[vIndex];
-            const auto vNeighbors = G->neighbors(vVertex);
-
-            for(size_t wIndex=vIndex+1; wIndex<degree; ++wIndex) {
-                const auto wVertex = neighborList[wIndex];
-
-                const bool edgeVW = G->edge_has(vVertex, wVertex);
-
-                for(size_t xIndex=wIndex+1; xIndex<degree; ++xIndex) {
-                    const auto xVertex = neighborList[xIndex];
-
-                    const bool edgeVX =  G->edge_has(vVertex, xVertex);
-                    const bool edgeWX =  G->edge_has(wVertex, xVertex);
-
-                    // found a claw
-                    if(!edgeVW && !edgeVX && !edgeWX) {
-                        std::vector<EdgeEdit> editsUnfiltered = {
-                            // remove edges from u
-                            {from: uVertex, to: vVertex, add: false},
-                            {from: uVertex, to: wVertex, add: false},
-                            {from: uVertex, to: xVertex, add: false},
-
-                            // add edges
-                            /*{from: vVertex, to: wVertex, add: true},
-                            {from: vVertex, to: xVertex, add: true},
-                            {from: wVertex, to: xVertex, add: true},*/
-                        };
-                        overlappingSolutionsPropositionEdgeAdds(G, editsUnfiltered, options, vVertex, wVertex, xVertex);
-
-                        auto edits = overlappingSolutionsFilterForbiddenEdits(G, options, forbidden, editsUnfiltered);
-                        branchingEditsFoundSubgraph = true;
-                        // std::cout << __FILE__<<":"<<__LINE__<<" edits filtered to: size="<<edits.size()<<"\n";
-                        if(edits.size() > 0 && (!branchingEditsFound || edits.size() < branchingEdits.size())) {
-                            branchingEdits = edits;
-                            branchingEditsFound = true;
-    #ifdef DEBUG
-                            branchingForbiddenName = "F1 (Claw) in " + Graph::vector_tostring_value({uVertex, vVertex, wVertex, xVertex});
-    #endif
-                            if(options.forbiddenTakeFirst || (edgesAdded.size() == 0 && edgesRemoved.size() == 0)) {
-                                vIndex = degree;
-                                wIndex = degree;
-                                break;
-                            }
-                        }
-
-                        // cannot find F2 or F3 when there is a claw
-                        // continue; // but could find another F1
-                    }
-                    
-                    // F1,F2,F3 don't have a triangle
-                    if(edgeVW && edgeWX && edgeVX) continue;
-
-                    for(size_t yIndex=xIndex+1; yIndex<degree; ++yIndex) {
-                        const auto yVertex = neighborList[yIndex];
-
-                        const std::vector<int> subgraphVertices = {vVertex, wVertex, xVertex, yVertex};
-                        const auto subgraph = G->getSubgraph(subgraphVertices);
-
-                        // too few/many edges
-                        if(subgraph.m() < 3 || subgraph.m() > 4) continue;
-
-                        const auto vDegree = subgraph.degree(0);
-                        const auto wDegree = subgraph.degree(1);
-                        const auto xDegree = subgraph.degree(2);
-                        const auto yDegree = subgraph.degree(3);
-
-                        // no edges = no F1, F2, F3
-                        if(vDegree==0 || wDegree==0 || xDegree==0 || yDegree==0) continue;
-
-                        std::vector<EdgeEdit> editsUnfiltered;
-    #ifdef DEBUG
-                        std::string branchingForbiddenNameMaybe = "";
-    #endif
-
-                        // F1: found a claw in the 4 vertices if edgeCount = 3
-                        if(vDegree==3) {
-                            if(subgraph.m() > 3) continue;
-                            editsUnfiltered = {
-                                // remove edges from claw center
-                                {from: vVertex, to: wVertex, add: false},
-                                {from: vVertex, to: xVertex, add: false},
-                                {from: vVertex, to: yVertex, add: false},
-
-                                // add edges between claw leaves
-                                /*{from: wVertex, to: xVertex, add: true},
-                                {from: wVertex, to: yVertex, add: true},
-                                {from: xVertex, to: yVertex, add: true},*/
-                            };
-                            overlappingSolutionsPropositionEdgeAdds(G, editsUnfiltered, options, wVertex, xVertex, yVertex);
-    #ifdef DEBUG
-                            branchingForbiddenNameMaybe = "F1 (Claw) in 4 vertices in " + Graph::vector_tostring_value({vVertex, wVertex, xVertex, yVertex});
-    #endif
-                        }
-                        else if(wDegree==3) {
-                            if(subgraph.m() > 3) continue;
-                            editsUnfiltered = {
-                                // remove edges from claw center
-                                {from: wVertex, to: vVertex, add: false},
-                                {from: wVertex, to: xVertex, add: false},
-                                {from: wVertex, to: yVertex, add: false},
-
-                                // add edges between claw leaves
-                                /*{from: vVertex, to: xVertex, add: true},
-                                {from: vVertex, to: yVertex, add: true},
-                                {from: xVertex, to: yVertex, add: true},*/
-                            };
-                            overlappingSolutionsPropositionEdgeAdds(G, editsUnfiltered, options, vVertex, xVertex, yVertex);
-    #ifdef DEBUG
-                            branchingForbiddenNameMaybe = "F1 (Claw) in 4 vertices in " + Graph::vector_tostring_value({wVertex, vVertex, xVertex, yVertex});
-    #endif
-                        }
-                        else if(xDegree==3) {
-                            if(subgraph.m() > 3) continue;
-                            editsUnfiltered = {
-                                // remove edges from claw center
-                                {from: xVertex, to: vVertex, add: false},
-                                {from: xVertex, to: wVertex, add: false},
-                                {from: xVertex, to: yVertex, add: false},
-
-                                // add edges between claw leaves
-                                /*{from: vVertex, to: wVertex, add: true},
-                                {from: vVertex, to: yVertex, add: true},
-                                {from: wVertex, to: yVertex, add: true},*/
-                            };
-                            overlappingSolutionsPropositionEdgeAdds(G, editsUnfiltered, options, vVertex, wVertex, yVertex);
-    #ifdef DEBUG
-                            branchingForbiddenNameMaybe = "F1 (Claw) in 4 vertices in " + Graph::vector_tostring_value({xVertex, vVertex, wVertex, yVertex});
-    #endif
-                        }
-                        else if(yDegree==3) {
-                            if(subgraph.m() > 3) continue;
-                            editsUnfiltered = {
-                                // remove edges from claw center
-                                {from: yVertex, to: vVertex, add: false},
-                                {from: yVertex, to: wVertex, add: false},
-                                {from: yVertex, to: xVertex, add: false},
-
-                                // add edges between claw leaves
-                                /*{from: vVertex, to: wVertex, add: true},
-                                {from: vVertex, to: xVertex, add: true},
-                                {from: wVertex, to: xVertex, add: true},*/
-                            };
-                            overlappingSolutionsPropositionEdgeAdds(G, editsUnfiltered, options, vVertex, wVertex, xVertex);
-    #ifdef DEBUG
-                            branchingForbiddenNameMaybe = "F1 (Claw) in 4 vertices in " + Graph::vector_tostring_value({yVertex, vVertex, wVertex, xVertex});
-    #endif
-                        }
-
-                        // F2: 3 edges, no vertices with degree = 0 or degree = 3
-                        else if (subgraph.m() == 3) {
-                            // get the P_4 path: have to start at a vertex with degree = 1
-                            std::vector<int> walk;
-                            if(vDegree==1) {
-                                walk = subgraph.getAnyWalk(0, 4);
-                            }
-                            else if(wDegree==1) {
-                                walk = subgraph.getAnyWalk(1, 4);
-                            }
-                            else if(xDegree==1) {
-                                walk = subgraph.getAnyWalk(2, 4);
-                            }
-                            else {
-                                walk = subgraph.getAnyWalk(3, 4);
-                            }
-
-                            editsUnfiltered = {
-                                // remove edges from u
-                                {from: uVertex, to: vVertex, add: false},
-                                {from: uVertex, to: wVertex, add: false},
-                                {from: uVertex, to: xVertex, add: false},
-                                {from: uVertex, to: yVertex, add: false},
-
-                                // remove center bottom edge
-                                {from: subgraph.id_get(walk[1]), to: subgraph.id_get(walk[2]), add: false},
-
-                                // add edges between P4
-                                {from: subgraph.id_get(walk[0]), to: subgraph.id_get(walk[2]), add: true},
-                                {from: subgraph.id_get(walk[1]), to: subgraph.id_get(walk[3]), add: true},
-
-                                // do not branch on v,y - spare this edge
-                                // {from: subgraph.id_get(walk[0]), to: subgraph.id_get(walk[3]), add: true},
-
-                                // remove other bottom edges (lead to F1 but we can only spare one edit, which is the v,y added edge)
-                                // do these edits only at the end
-                                {from: subgraph.id_get(walk[0]), to: subgraph.id_get(walk[1]), add: false},
-                                {from: subgraph.id_get(walk[2]), to: subgraph.id_get(walk[3]), add: false},
-                            };
-    #ifdef DEBUG
-                            /*if(k==1 && uVertex==0) std::cout << "\t"<< __FILE__<<":"<<__LINE__<<" s="<<s<<" k="<<k<<" finding F2 with u="<<uVertex<<" ids="<<Graph::vector_tostring(subgraph.ids)
-                                <<" walk="<<Graph::vector_tostring(walk)
-                                <<" edgesAdded="<<Graph::vector_tostring(edgesAdded)<<" edgesRemoved="<<Graph::vector_tostring(edgesRemoved)
-                                <<" forbidden="<<Graph::vector_tostring(forbidden)
-                                <<" subgraph edges: "<<Graph::vector_tostring(subgraph.edges)<<"\n";*/
-                            branchingForbiddenNameMaybe = "F2 in " + Graph::vector_tostring_value({uVertex, subgraph.id_get(walk[0]), subgraph.id_get(walk[1]), subgraph.id_get(walk[2]), subgraph.id_get(walk[3])});
-    #endif
-                        }
-
-                        // F3: all degrees are exactly 2
-                        else {
-                            const auto walk = subgraph.getAnyWalk(0, 4);
-
-                            /// std::cout << __FILE__<<":"<<__LINE__<<" s="<<s<<" k="<<k<<" walk="<< Graph::vector_tostring(walk)<<" v="<<vVertex<<" w="<<wVertex<<" x="<<xVertex<<" y="<<yVertex<<" id of walk0="<<subgraph.id_get(walk[0])<<"\n";
-                            editsUnfiltered = {
-                                // remove edges from u
-                                {from: uVertex, to: vVertex, add: false},
-                                {from: uVertex, to: wVertex, add: false},
-                                {from: uVertex, to: xVertex, add: false},
-                                {from: uVertex, to: yVertex, add: false},
-
-                                // add edges between C4
-                                {from: subgraph.id_get(walk[0]), to: subgraph.id_get(walk[2]), add: true},
-                                {from: subgraph.id_get(walk[1]), to: subgraph.id_get(walk[3]), add: true},
-
-                                // remove bottom edges (lead to F2 but we can only spare one edit, which is the walk[0]->walk[3] removed edge)
-                                // do these edits only at the end
-                                {from: subgraph.id_get(walk[0]), to: subgraph.id_get(walk[1]), add: false},
-                                {from: subgraph.id_get(walk[1]), to: subgraph.id_get(walk[2]), add: false},
-                                {from: subgraph.id_get(walk[2]), to: subgraph.id_get(walk[3]), add: false},
-                                // {from: subgraph.id_get(walk[0]), to: subgraph.id_get(walk[3]), add: false},
-                            };
-    #ifdef DEBUG
-                            branchingForbiddenNameMaybe = "F3 in " + Graph::vector_tostring_value({uVertex, subgraph.id_get(walk[0]), subgraph.id_get(walk[1]), subgraph.id_get(walk[2]), subgraph.id_get(walk[3])});
-    #endif
-                        }
-
-                        // filter edits, fix order from < to
-                        auto edits = overlappingSolutionsFilterForbiddenEdits(G, options, forbidden, editsUnfiltered);
-
-    #ifdef DEBUG
-                        /*if(k==1 && uVertex==0) std::cout << "\t"<< __FILE__<<":"<<__LINE__<<" s="<<s<<" k="<<k<<" finding F2 with edit size "<<edits.size()
-                                <<" edgesAdded="<<Graph::vector_tostring(edgesAdded)<<" edgesRemoved="<<Graph::vector_tostring(edgesRemoved)
-                                <<" subgraph edges: "<<Graph::vector_tostring(subgraph.edges)<<"\n";*/
-    #endif
-                        branchingEditsFoundSubgraph = true;
-                        if(edits.size() > 0 && (!branchingEditsFound || edits.size() < branchingEdits.size())) {
-                            branchingEdits = edits;
-                            branchingEditsFound = true;
-    #ifdef DEBUG
-                            branchingForbiddenName = branchingForbiddenNameMaybe;
-    #endif
-
-                            if(options.forbiddenTakeFirst || (edgesAdded.size() == 0 && edgesRemoved.size() == 0)) {
-                                vIndex = degree;
-                                wIndex = degree;
-                                xIndex = degree;
-                                break;
-                            }
-                        }
-                    }
-                }
-            }
-        }
+        overlappingClusterEditingFindForbiddenInU(G, s, k, options, uVertex, forbidden, edgesAdded, edgesRemoved, 
+            branchingEditsFoundSubgraph, branchingEditsFound, branchingEdits
+        );
         options.timeFindingForbidden += TimeDifference(startLooking);
     }
 

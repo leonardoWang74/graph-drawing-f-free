@@ -1,6 +1,7 @@
 /*
-Run using nauty geng
+Checks a proposition algorithm vs. a base algorithm.
 
+Run using nauty geng
 nauty-geng -c 14 | ./checker
 */
 
@@ -19,13 +20,14 @@ int main() {
 
     OverlappingEditingOptions optionsProposition = {
         .useFellowsForbidden = false,
+        .useForbiddenCliques = false,
         .forbidCriticalCliques = true, // even if every one works, the "random" selection of forbidden subgraph doesn't guarantee this always works
         .forbidCliques = false, // counterexample: "2"-star triangles I???CB{{w - maybe this will never work
-        .noNeighborProposition = false,
+        .noSharedNeighborProposition = false,
     };
     OverlappingEditingOptions optionsNormal = {
         .useFellowsForbidden = false,
-        .noNeighborProposition = false,
+        .noSharedNeighborProposition = false,
     };
 
     long graphsCount = 0;
@@ -48,12 +50,16 @@ int main() {
             continue;
         }*/
         // critical cliques skip
-        if(G.n()==10 && graphsCount < 2196214 && optionsProposition.forbidCriticalCliques && !optionsProposition.useFellowsForbidden) {
+        if(G.n()==10 && graphsCount < 5536519 && optionsProposition.forbidCriticalCliques && !optionsProposition.useFellowsForbidden) {
+            std::cout << "Skipping graph: already did it\n";
+            continue;
+        }
+        if(G.n()==14 && graphsCount < 0 && optionsProposition.forbidCriticalCliques && !optionsProposition.useFellowsForbidden) {
             std::cout << "Skipping graph: already did it\n";
             continue;
         }
         // fellows forbidden skip
-        if(G.n()==10 && graphsCount < 45 && optionsProposition.useFellowsForbidden) {
+        if(G.n()==10 && graphsCount < 50 && optionsProposition.useFellowsForbidden) {
             std::cout << "Skipping graph: already did it\n";
             continue;
         }
@@ -85,7 +91,7 @@ int main() {
             }
 
             if(overlappingSolutions.size() == 0) {
-                // std::cout << "k="<<k<<": No proposition solutions found graph="<< line<<" in "<<OverlappingEditingOptionsToString(optionsProposition)<<"\n";
+                std::cout << "k="<<k<<": No proposition solutions found. Time until now ="<<totalTime<<" µs\n";
                 continue;
             }
 

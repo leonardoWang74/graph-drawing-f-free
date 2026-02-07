@@ -34,6 +34,10 @@ struct OverlappingEditingOptions {
     // if FALSE: find forbidden subgraphs by going through neighbors
     bool useFellowsForbidden = true;
 
+    // if TRUE: find $u$ using maximal cliques
+    // if FALSE: find $u$ by trying every vertex
+    bool useForbiddenCliques = true;
+
     // if TRUE: at the start of the algorithm forbid all edges inside critical cliques
     // if FALSE: do not do that
     bool forbidCriticalCliques = false;
@@ -50,7 +54,7 @@ struct OverlappingEditingOptions {
     // if the leaves don't have a shared neighbor other than the
     // claw center.
     // if FALSE: always branch on all claw possibilities
-    bool noNeighborProposition = false;
+    bool noSharedNeighborProposition = false;
     // number of times the proposition was used
     int noNeighborPropositionCount = 0;
 
@@ -65,10 +69,10 @@ struct OverlappingEditingOptions {
     // have finished
     bool forbiddenCopy = false;
 
-    // if TRUE: take the first forbidden subgraph found in $u$
-    // if FALSE: loop through all forbidden subgraphs found in $u$
-    // and choose the one with the least edits (filtered by forbidden)
-    bool forbiddenTakeFirst = false;
+    // only check out the first forbiddenMaxCount forbidden subgraphs found.
+    // other forbidden subgraphs might overlap more forbidden edits,
+    // but we have to look for them (maybe much) longer.
+    bool forbiddenMaxCount = 15;
 
     // total running time
     long timeTotal = 0;
