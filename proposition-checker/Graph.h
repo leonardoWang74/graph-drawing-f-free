@@ -58,6 +58,10 @@ struct OverlappingEditingOptions {
     // number of times the proposition was used
     int noNeighborPropositionCount = 0;
 
+    // if TRUE: do not branch on adding edges to a vertex with degree 1
+    bool isolateProposition = false;
+    int isolatePropositionCount = 0;
+
     // if TRUE: forbidden edits are stored in a nxn matrix.
     // if FALSE: forbidden edits are stored in adjacency lists
     bool forbiddenMatrix = true;
@@ -135,6 +139,7 @@ class Graph {
     unsigned int m() const;
 
     static Graph parse_graph6(const std::string& g6);
+    std::string to_graph6() const;
 
     explicit Graph(int n);
     explicit Graph(const Graph* G);
@@ -242,5 +247,11 @@ template <typename T> std::string Graph::vector_tostring(const std::vector<T>& v
     }
     return s + "]";
 }*/
+
+void overlappingClusterEditingFindForbiddenInU(Graph* G, size_t s, int k, OverlappingEditingOptions& options, int uVertex,
+    std::vector<std::vector<int>>& forbidden,
+    std::vector<std::vector<int>>& edgesAdded, std::vector<std::vector<int>>& edgesRemoved,
+    bool& branchingEditsFoundSubgraph, bool& branchingEditsFound, std::vector<EdgeEdit>& branchingEdits
+);
 
 #endif

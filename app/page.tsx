@@ -1110,7 +1110,26 @@ export function GraphEditor({
                 if(!EventKeyboardCanFire(e)) return;
 
                 const list = [
-                    "I?`DdfKQw",
+                    "EANw",
+                    "EC^w",
+                    "F@d~w",
+                    "FCS~w",
+                    "F_L~w",
+                    "FAl~w",
+                    "FEl~w",
+                    "FAL~w",
+                    "FQl~w",
+                    "GCdj~{",
+                    "GCdj~{",
+                    "FQl~w",
+                    "FAL~w",
+                    "FEl~w",
+                    "FAl~w",
+                    "F_L~w",
+                    "FCS~w",
+                    "F@d~w",
+                    "EC^w",
+                    "EANw",
                 ];
 
                 let x = 0;

@@ -10,12 +10,12 @@
 #endif
 
 void testGraph() {
+    size_t s = 3;
     OverlappingEditingOptions options = {
-        .useFellowsForbidden = true,
+        .useFellowsForbidden = false,
         .useForbiddenCliques = false,
-        .forbidCriticalCliques = false,
+        .forbidCriticalCliques = true,
         .noSharedNeighborProposition = false,
-        .forbiddenTakeFirst = true,
     };
 
     // normal solution k=3: Solution: Edges Added:[[2,3,3],[0,9,2]], Edges Removed:[[1,9,1]]
@@ -59,12 +59,12 @@ void testGraph() {
     const int kBound = 3;
     // const int kBound = G.n() * G.n();
 
-    auto bound = G.overlappingClusterEditingLowerBound(2, -1, options);
+    auto bound = G.overlappingClusterEditingLowerBound(s, -1, options);
     std::cout << "Lower bound="<<bound<<"\n";
 
     for(int k=0; k<=kBound; ++k) {
         std::cout << "k="<<k<<"\n";
-        auto overlappingSolutions = G.overlappingClusterEditingSolutionsBranchAndBound(2, k, options, 0);
+        auto overlappingSolutions = G.overlappingClusterEditingSolutionsBranchAndBound(s, k, options, 0);
         if(overlappingSolutions.size() == 0) {
             std::cout << "k="<<k<<": No solutions found in "<<OverlappingEditingOptionsToString(options)<<"\n";
             std::cout << "#########################################################\n";
@@ -86,7 +86,6 @@ void testGraph() {
 void testStars() {
     OverlappingEditingOptions options = {
         .noSharedNeighborProposition = false,
-        .forbiddenTakeFirst = true,
     };
 
     int s = 2;

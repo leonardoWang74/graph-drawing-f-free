@@ -18,15 +18,35 @@ checker.o: checker.cpp Graph.h
 checker-compile: checker.o Graph.o out-directory
 	$(CXX) $(CXXFLAGS) checker.o Graph.o -o out/checker
 
-# ran with 8: no graph where proposition algorithm finds a worse solution
-# ran with 9: no graph where proposition algorithm finds a worse solution (checked 261080 connected graphs)
-# ran with 10: ? / 11 716 571
-# ran with 11: 
-# ran with 12: 1500
+# n = 8: 
+# n = 9: 261 080 connected graphs
+# n = 10: 11 716 571 connected graphs
+# n = 11: 
+# n = 12: 1500
 
 checker: checker-compile
-	nauty-geng -c 10 | ./out/checker
+	nauty-geng -c 9 | ./out/checker
 
+# unique strings script
+uniqueStrings.o: uniqueStrings.cpp Graph.h
+	$(CXX) $(CXXFLAGS) -c uniqueStrings.cpp
+
+uniqueStrings-compile: uniqueStrings.o Graph.o out-directory
+	$(CXX) $(CXXFLAGS) uniqueStrings.o Graph.o -o out/uniqueStrings
+
+# minimalforbidden script
+minimalForbiddenGenerate.o: minimalForbiddenGenerate.cpp Graph.h
+	$(CXX) $(CXXFLAGS) -c minimalForbiddenGenerate.cpp
+
+minimalForbiddenGenerate-compile: minimalForbiddenGenerate.o Graph.o out-directory
+	$(CXX) $(CXXFLAGS) minimalForbiddenGenerate.o Graph.o -o out/minimalForbiddenGenerate
+
+# max (s+1)*s+1 = s^2+s+1
+# s=2: 7
+# s=3: 13
+# s=4: 21
+minimalForbidden: minimalForbiddenGenerate-compile uniqueStrings-compile
+	nauty-geng -q -c 9 | ./out/minimalForbiddenGenerate | nauty-labelg -q | ./out/uniqueStrings -i -q
 
 # test script
 test.o: test.cpp Graph.h
