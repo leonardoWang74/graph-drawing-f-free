@@ -58,6 +58,16 @@ test-compile: test.o Graph.o out-directory
 test: test-compile
 	./out/test
 
+# testWithNauty script
+testWithNauty.o: testWithNauty.cpp Graph.h
+	$(CXX) $(CXXFLAGS) -c testWithNauty.cpp
+
+testWithNauty-compile: testWithNauty.o Graph.o out-directory
+	$(CXX) $(CXXFLAGS) testWithNauty.o Graph.o -o out/testWithNauty
+
+testWithNauty: testWithNauty-compile
+	nauty-geng -q -c 11 | ./out/testWithNauty
+
 
 
 clean:

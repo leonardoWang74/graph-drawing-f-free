@@ -1921,15 +1921,6 @@ std::string Graph::vector_tostring_value(const std::vector<int> vec) {
     return s + "]";
 }
 
-std::vector<int> Graph::vector_slice(const std::vector<int>& vec, size_t from, size_t to) {
-    const size_t n = to - from;
-    std::vector<int> result = std::vector<int>(n);
-    for(size_t i=0; i<n; ++i) {
-        result[i] = vec[from + i];
-    }
-    return result;
-}
-
 bool Graph::sorted_contains(const std::vector<int>& vec, int x) {
     return std::binary_search(vec.begin(), vec.end(), x);
 }

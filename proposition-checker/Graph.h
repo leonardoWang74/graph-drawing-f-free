@@ -157,7 +157,7 @@ class Graph {
     template <typename T> static std::string vector_tostring(const std::vector<T>& vec);
     // template <typename T> static std::string vector_tostring(const std::vector<std::vector<T>>& vec);
 
-    static std::vector<int> vector_slice(const std::vector<int>& vec, size_t from, size_t to);
+    template <typename T> static std::vector<T> vector_slice(const std::vector<T>& vec, size_t from, size_t to);
 
     static bool sorted_contains(const std::vector<int>& vec, int x);
     static void sorted_insert(std::vector<int>& vec, int x);
@@ -206,6 +206,15 @@ class Graph {
     // TRUE if ids has been initialized
     bool ids_initialized;
 };
+
+template <typename T> std::vector<T> Graph::vector_slice(const std::vector<T>& vec, size_t from, size_t to) {
+    const size_t n = to - from;
+    std::vector<T> result = std::vector<T>(n);
+    for(size_t i=0; i<n; ++i) {
+        result[i] = vec[from + i];
+    }
+    return result;
+}
 
 template <typename T> std::string Graph::vector_tostring(const T value) {
     return std::to_string(value);

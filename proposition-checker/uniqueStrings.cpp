@@ -2,10 +2,9 @@
 Receives strings on std::cin and then prints the unique strings
 
 Usage:
-uniqueStrings [-i] [-h] [-q]
+uniqueStrings [-s] [-q]
 
--i: immediately print output if available. Otherwise collect and print only at the end. If also using -h then the number of elements is printed last.
--h: print a header with the number of elements
+-s: use if the input is guaranteed to be only short strings - the strings will not be hashed which can be faster. Otherwise, the strings are hashed.
 -q: print the outputs in quotes and a comma before the new line.
 */
 
@@ -15,51 +14,50 @@ uniqueStrings [-i] [-h] [-q]
 
 int main(int argc, char* argv[]) {
     std::string line;
-    std::unordered_set<std::string> foundStrings = std::unordered_set<std::string>(100);
 
-    bool printImmediate = false;
-    bool printHeader = false;
+    // set of strings found
+    std::unordered_set<std::string> foundStrings = std::unordered_set<std::string>(100);
+    // set of hashes found
+    std::unordered_set<size_t> foundHashes = std::unordered_set<size_t>(100);
+
+    // hasher in case the input is long strings
+    std::hash<std::string> hasher;
+
+    // parse options
     bool printWithQuotes = false;
+    bool shortStrings = false;
     for(int i=1; i<argc; ++i) {
         std::string option = argv[i];
-        if(option == "-i") printImmediate = true;
-        if(option == "-h") printHeader = true;
         if(option == "-q") printWithQuotes = true;
+        if(option == "-s") shortStrings = true;
     }
 
+    // read inputs and print
     while (std::getline(std::cin, line)) {
         if (line.empty()) continue;
 
-        // already found this string
-        if(foundStrings.find(line) != foundStrings.end()) {
-            continue;
+        // check if we already found this string
+        if(shortStrings) {
+            // check and save the string itself
+            if(foundStrings.find(line) != foundStrings.end()) {
+                continue;
+            }
+            foundStrings.insert(line);
+        } else {
+            // check a hash
+            auto hash = hasher(line);
+            if(foundHashes.find(hash) != foundHashes.end()) {
+                continue;
+            }
+            foundHashes.insert(hash);
         }
-
-        foundStrings.insert(line);
 
         // print immediately
-        if(printImmediate) {
-            if(printWithQuotes) {
-                std::cout << "\"" << line << "\",\n";
-            }
-            else {
-                std::cout << line << "\n";
-            }
+        if(printWithQuotes) {
+            std::cout << "\"" << line << "\",\n";
         }
-    }
-    
-    // print header as number of strings filtered
-    if(printHeader) std::cout << foundStrings.size() << "\n";
-
-    // print filtered strings
-    if(printWithQuotes) {
-        for(auto s : foundStrings) {
-            std::cout << "\"" << s << "\",\n";
-        }
-    }
-    else {
-        for(auto s : foundStrings) {
-            std::cout << s << "\n";
+        else {
+            std::cout << line << "\n";
         }
     }
 
