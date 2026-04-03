@@ -1110,7 +1110,7 @@ export function GraphEditor({
                 if(!EventKeyboardCanFire(e)) return;
 
                 const list = [
-                    "J??CF@Zur}_",
+                    "FUZvW",
                 ];
 
                 let x = 0;
@@ -2785,7 +2785,7 @@ const VertexRender = React.memo((props: {
                     {v.label ? v.label : v.id}
                 </text>
             }
-            {cliqueAmount && <>
+            {false && cliqueAmount && <>
                 {!labelEmpty && <circle
                     cx={v.position.x} cy={v.position.y - style.radius - 1}
                     r={8}

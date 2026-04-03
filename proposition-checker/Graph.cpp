@@ -9,6 +9,7 @@
 #include <cstring>
 #include <stdexcept>
 #include <iostream>
+#include <functional>
 
 #include "Graph.h"
 
@@ -2105,4 +2106,70 @@ std::vector<int> Graph::sorted_difference_slice(const std::vector<int>& a, size_
     }
 
     return list;
+}
+
+// loop through all subset indices of size `n` and call `function` with the indices (of size `indicesSize`) as long as `function` returns TRUE.
+// Example: with n=4, indicesSize=2 the indices are [0,1], [0,2], [0,3], [1,2], [1,3], [2,3]
+void SubsetsOfSizeLoop(size_t n, size_t indicesSize, std::function<bool(size_t n, std::vector<size_t>)> function) {
+    std::vector<size_t> indices = std::vector<size_t>(indicesSize);
+    size_t lastIndexIndex = indices.size() - 1;
+
+    // initial indices
+    for(size_t i=0; i<indices.size(); ++i) {
+        indices[i] = i;
+    }
+
+    // go through all possible indices
+    bool loop = true;
+    while(loop) {
+        // call function with indices
+        auto functionCall = function(n, indices);
+        if(!functionCall) break;
+        
+        // increment indices
+        size_t incrementIndex = lastIndexIndex;
+        while(true) {
+            auto newValue = indices.at(incrementIndex) + 1;
+
+            // first index can only go up so far since the other indices need space
+            const auto indexBound = n - lastIndexIndex + incrementIndex;
+
+            // wrap-around: also increment next index
+            if(newValue >= indexBound) {
+                // first index reached the last value: stop the outer loop
+                if(incrementIndex == 0) {
+                    loop = false;
+                    break;
+                }
+                // other index reached the last value: set to value at previous index + 2 since previous will also be incremented
+                else {
+                    indices.at(incrementIndex) = indices.at(incrementIndex-1) + 2;
+                }
+                --incrementIndex;
+            }
+            // otherwise: only increment last index
+            else {
+                indices[incrementIndex] = newValue;
+                break;
+            }
+        }
+
+        // set new subgraph vertex for other incrementIndex and
+        // adjust other indices. Example degree=8, increment [0,1,5,6,7] -> [0,2,3,7,8] -> [0,2,3,4,5]
+        while(++incrementIndex < indicesSize) {
+            indices[incrementIndex] = indices[incrementIndex-1] + 1;
+        }
+    }
+}
+
+std::string Graph::stringvector_tostring(const std::vector<std::string>& vec) {
+    const auto n = vec.size();
+    if(n == 0) return "[]";
+    auto it = vec.begin();
+    std::string s = "[" + (*it);
+    for(size_t i=1; i<n; ++i) {
+        ++it;
+        s += "," + (*it);
+    }
+    return s + "]";
 }

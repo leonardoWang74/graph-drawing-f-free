@@ -66,8 +66,10 @@ testWithNauty-compile: testWithNauty.o Graph.o out-directory
 	$(CXX) $(CXXFLAGS) testWithNauty.o Graph.o -o out/testWithNauty
 
 testWithNauty: testWithNauty-compile
-	nauty-geng -q -c 11 | ./out/testWithNauty
+	# nauty-geng -q -c 7 | ./out/testWithNauty -p 6
 
+	# NOT CONNECTED
+	nauty-geng -q 7 | ./out/testWithNauty -p 1
 
 
 clean:

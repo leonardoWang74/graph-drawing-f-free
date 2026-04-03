@@ -23,7 +23,7 @@ struct MaximalCliquesInfo {
 #endif
     cliqueList;
 
-    // map of vertex -> overlapping cliques
+    // map of vertex -> overlapping clique indices
     std::vector<std::vector<size_t>> vertexCliques;
     // vertex in at least s+1 cliques. If no such vertex exists, set to -1
     int vertexInMoreThanSCliques = -1;
@@ -155,6 +155,7 @@ class Graph {
     template <typename T> static std::string vector_tostring(const T vec);
     template <typename T> static std::string vector_tostring(const std::unordered_set<T>& vec);
     template <typename T> static std::string vector_tostring(const std::vector<T>& vec);
+    static std::string stringvector_tostring(const std::vector<std::string>& vec);
     // template <typename T> static std::string vector_tostring(const std::vector<std::vector<T>>& vec);
 
     template <typename T> static std::vector<T> vector_slice(const std::vector<T>& vec, size_t from, size_t to);
@@ -262,5 +263,7 @@ void overlappingClusterEditingFindForbiddenInU(Graph* G, size_t s, int k, Overla
     std::vector<std::vector<int>>& edgesAdded, std::vector<std::vector<int>>& edgesRemoved,
     bool& branchingEditsFoundSubgraph, bool& branchingEditsFound, std::vector<EdgeEdit>& branchingEdits
 );
+
+void SubsetsOfSizeLoop(size_t n, size_t indicesSize, std::function<bool(size_t n, std::vector<size_t>)> function);
 
 #endif
