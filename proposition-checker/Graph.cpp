@@ -180,7 +180,7 @@ DegeneracyAndOrdering Graph::getDegeneracyOrdering(int s, int k) const {
  * Returns -1 if there was no vertex found in more than `s` cliques, otherwise the vertex id (if s=0 then always returns -1).
  * [Eppstein et al. 2010 - Listing All Maximal Cliques in Sparse Graphs in Near-optimal Time, Figure 2: BronKerboschPivot]
  */
-int BronKerboschPivot(Graph* G, MaximalCliquesInfo& result, size_t s
+int BronKerboschPivot(Graph* G, MaximalCliquesInfo& result, size_t s, bool stopAfterOneVertexInMoreThanS
 #ifndef GRAPH_H_MATRIX_AND_LIST
     , std::unordered_set<int>& P, std::unordered_set<int>& R, std::unordered_set<int>& X
 #else
@@ -198,12 +198,16 @@ int BronKerboschPivot(Graph* G, MaximalCliquesInfo& result, size_t s
 
         // count number of cliques per vertex, if >s then return that vertex id
         if(s > 0) {
+            // already found one
+            if(stopAfterOneVertexInMoreThanS && result.vertexInMoreThanSCliques != -1) return result.vertexInMoreThanSCliques;
+
+            // count
             for(auto vid : R) {
                 auto& list = result.vertexCliques.at(vid);
                 list.push_back(result.cliqueList.size() - 1);
                 if(list.size() > s) {
                     result.vertexInMoreThanSCliques = vid;
-                    return vid;
+                    if(stopAfterOneVertexInMoreThanS) return vid;
                 }
             }
         }
@@ -272,10 +276,13 @@ int BronKerboschPivot(Graph* G, MaximalCliquesInfo& result, size_t s
 #endif
 
         // BronKerboschPivot(P \cap N(v), R \cup \{v\}, X \cap N(v))
-        const auto vertex = BronKerboschPivot(G, result, s,
+        const auto vertex = BronKerboschPivot(G, result, s, stopAfterOneVertexInMoreThanS,
             P_new, R, X_new
         );
-        if(vertex >= 0) return vertex;
+        if(vertex >= 0) {
+            result.vertexInMoreThanSCliques = vertex;
+            if(stopAfterOneVertexInMoreThanS) return vertex;
+        }
 
 #ifndef GRAPH_H_MATRIX_AND_LIST
         // do not have to copy R
@@ -304,7 +311,7 @@ int BronKerboschPivot(Graph* G, MaximalCliquesInfo& result, size_t s
  * Returns -1 if there was no vertex found in more than `s` cliques, otherwise the vertex id (if s=0 then always returns -1).
  * [Eppstein et al. 2010 - Listing All Maximal Cliques in Sparse Graphs in Near-optimal Time, Figure 4: BronKerboschDegeneracy]
  */
-int BronKerboschDegeneracyByEppsteinLoefflerStrash(Graph* G, MaximalCliquesInfo& result, size_t s) {
+int BronKerboschDegeneracyByEppsteinLoefflerStrash(Graph* G, MaximalCliquesInfo& result, size_t s, bool stopAfterOneVertexInMoreThanS) {
     auto degeneracyInfo = G->getDegeneracyOrdering();
 
     // for each vertex vi in a degeneracy ordering $v_0, v_1, v_2, \dots$ of $(V,E)$ do
@@ -349,16 +356,20 @@ int BronKerboschDegeneracyByEppsteinLoefflerStrash(Graph* G, MaximalCliquesInfo&
         R.push_back(vid);
 #endif
 
-        const auto vertex = BronKerboschPivot(G, result, s, P, R, X);
-        if(vertex >= 0) return vertex;
+        const auto vertex = BronKerboschPivot(G, result, s, stopAfterOneVertexInMoreThanS, P, R, X);
+        if(vertex >= 0) {
+            result.vertexInMoreThanSCliques = vertex;
+            if(stopAfterOneVertexInMoreThanS) return vertex;
+        }
     }
     return -1;
 }
 
 /** find maximal cliques using Bron-Kerbosch based on degeneracy by Eppstein, Loeffler and Strash.
+ * s>0: count number of cliques per vertex, if we found a vertex in >s maximal cliques and stopAfterOneVertexInMoreThanS=true, then stop
  * [Eppstein et al. 2010 - Listing All Maximal Cliques in Sparse Graphs in Near-optimal Time, Figure 4: BronKerboschDegeneracy]
  */
-MaximalCliquesInfo Graph::getMaximalCliques(size_t s) {
+MaximalCliquesInfo Graph::getMaximalCliques(size_t s, bool stopAfterOneVertexInMoreThanS) {
     MaximalCliquesInfo info = MaximalCliquesInfo();
 #ifndef GRAPH_H_MATRIX_AND_LIST
     info.cliqueList = std::vector<std::unordered_set<int>>();
@@ -369,7 +380,7 @@ MaximalCliquesInfo Graph::getMaximalCliques(size_t s) {
     info.vertexCliques = std::vector<std::vector<size_t>>(this->n(), std::vector<size_t>());
     info.vertexInMoreThanSCliques = -1;
 
-    BronKerboschDegeneracyByEppsteinLoefflerStrash(this, info, s);
+    BronKerboschDegeneracyByEppsteinLoefflerStrash(this, info, s, stopAfterOneVertexInMoreThanS);
     return info;
 }
 
@@ -386,7 +397,7 @@ int Graph::getVertexInMoreThanSCliques(int s) {
 #endif
     info.vertexCliques = std::vector<std::vector<size_t>>(this->n(), std::vector<size_t>());
     info.vertexInMoreThanSCliques = -1;
-    BronKerboschDegeneracyByEppsteinLoefflerStrash(this, info, s);
+    BronKerboschDegeneracyByEppsteinLoefflerStrash(this, info, s, true);
     // std::cout << "\t\t" << __FILE__<<":"<<__LINE__<<" s="<<s<<" cliques="<<Graph::vector_tostring(info.cliqueList)<<"\n";
     return info.vertexInMoreThanSCliques;
 }
@@ -861,12 +872,12 @@ void overlappingClusterEditingFindForbiddenInU(Graph* G, size_t s, int k, Overla
             }
             else {
                 // else: look for $F_3 - 1$
-                int vertexWithDegree1 = -1;
+                // int vertexWithDegree1 = -1;
                 std::vector<size_t> degreesCount = std::vector<size_t>(subgraph.n()+1, 0);
                 for(unsigned int i=0; i<subgraph.n(); ++i) {
                     const auto d = subgraph.degree(i);
                     ++degreesCount[d];
-                    if(d == 1) vertexWithDegree1 = i;
+                    // if(d == 1) vertexWithDegree1 = i;
                 }
 
                 // maybe F_3
@@ -1684,12 +1695,15 @@ std::vector<int> Graph::getAnyWalk(int vertex_start, unsigned int path_size_max)
 Graph Graph::getSubgraph(const std::vector<int>& vertex_ids) const {
     Graph graph(vertex_ids.size());
     
-    graph.ids.assign(graph.number_vertices, 0);
+    // graph.ids = std::vector<int>(vertex_ids);
+    graph.ids = std::vector<int>(vertex_ids);
+    graph.ids_reverse = std::vector<int>(this->n(), -1);
     graph.ids_initialized = true;
 
     // set the IDs map
     for(unsigned int i=0; i<graph.number_vertices; ++i) {
-        graph.ids[i] = vertex_ids.at(i);
+        // graph.ids[i] = vertex_ids.at(i); // this would be the ids mapping
+        graph.ids_reverse[vertex_ids.at(i)] = i; // ids_reverse is the reverse map of ids
     }
 
     // copy edges
@@ -1763,10 +1777,18 @@ const std::vector<int>& Graph::neighbors(int v) const {
 }
 #endif
 
-// returns the mapped ID of the given vertex_id
+// returns the mapped ID of the given vertex_id. [0,this->n()] -> [0,Parent_Graph->n()]
 int Graph::id_get(const int v) const {
     if(!this->ids_initialized) return -1;
     return this->ids.at(v);
+}
+
+// returns the mapped ID of the given vertex_id. [0,Parent_Graph->n()) -> [0,this->n()]
+// if this is not a subgraph, returns -2
+// if the id does not exist (vertex is not in the subgraph), returns -1
+int Graph::id_reverse_get(const int v) const {
+    if(!this->ids_initialized) return -2;
+    return this->ids_reverse.at(v);
 }
 
 // returns whether there is a map of this vertices to other vertex IDs
@@ -1777,6 +1799,10 @@ bool Graph::id_has() const {
 // returns the number of vertices in this graph
 unsigned int Graph::n() const {
     return this->number_vertices;
+}
+// returns the number of vertices in this graph
+int Graph::n_signed() const {
+    return (int)this->number_vertices;
 }
 
 // returns the number of edges in this graph
@@ -1878,6 +1904,7 @@ Graph::Graph(const Graph* G) {
     this->ids_initialized = G->ids_initialized;
     if(G->ids_initialized) {
         this->ids = std::vector<int>(G->ids);
+        this->ids_reverse = std::vector<int>(G->ids_reverse);
     }
 
     // copy adjacency lists and matrix
@@ -2108,7 +2135,7 @@ std::vector<int> Graph::sorted_difference_slice(const std::vector<int>& a, size_
     return list;
 }
 
-// loop through all subset indices of size `n` and call `function` with the indices (of size `indicesSize`) as long as `function` returns TRUE.
+// loop through all subset indices `0 .. n-1` and call `function` with the indices (of size `indicesSize`) as long as `function` returns TRUE.
 // Example: with n=4, indicesSize=2 the indices are [0,1], [0,2], [0,3], [1,2], [1,3], [2,3]
 void SubsetsOfSizeLoop(size_t n, size_t indicesSize, std::function<bool(size_t n, std::vector<size_t>)> function) {
     std::vector<size_t> indices = std::vector<size_t>(indicesSize);

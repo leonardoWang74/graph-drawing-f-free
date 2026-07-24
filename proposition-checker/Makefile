@@ -69,7 +69,22 @@ testWithNauty: testWithNauty-compile
 	# nauty-geng -q -c 7 | ./out/testWithNauty -p 6
 
 	# NOT CONNECTED
-	nauty-geng -q 7 | ./out/testWithNauty -p 1
+	nauty-geng -q 11 | ./out/testWithNauty -p 3
+
+# branchingAutomated script
+branchingAutomated.o: branchingAutomated.cpp Graph.h
+	$(CXX) $(CXXFLAGS) -c branchingAutomated.cpp
+
+branchingAutomated-compile: branchingAutomated.o Graph.o out-directory
+	$(CXX) $(CXXFLAGS) branchingAutomated.o Graph.o -o out/branchingAutomated
+
+branchingAutomated: branchingAutomated-compile
+	# ./out/branchingAutomated -t
+	nauty-geng -cq 6 | ./out/branchingAutomated -p 1 -s 1 -u
+	# nauty-geng -cq 5 | ./out/branchingAutomated -p 1 -s 2 -u
+
+branchingAutomatedDebugSingle: branchingAutomated-compile
+	echo "ECZ?" | ./out/branchingAutomated -p 1 -s 1 -u
 
 
 clean:

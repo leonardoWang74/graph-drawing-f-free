@@ -6,6 +6,7 @@
 // 2. a std::vector<std::vector<int>> as sorted adjacency list
 #define GRAPH_H_MATRIX_AND_LIST
 
+#include <functional>
 #include <vector>
 #include <string>
 #include <optional>
@@ -22,6 +23,8 @@ struct MaximalCliquesInfo {
     std::vector<std::vector<int>> 
 #endif
     cliqueList;
+
+    std::vector<std::unordered_set<int>> cliqueSets = {};
 
     // map of vertex -> overlapping clique indices
     std::vector<std::vector<size_t>> vertexCliques;
@@ -119,7 +122,7 @@ class Graph {
     std::vector<Graph> overlappingClusterEditingSolutionsBranchAndBound(size_t s, int k, OverlappingEditingOptions& options, unsigned int maxSolutions) const;
 
     int getVertexInMoreThanSCliques(int s);
-    MaximalCliquesInfo getMaximalCliques(size_t s=0);
+    MaximalCliquesInfo getMaximalCliques(size_t s=0, bool stopAfterOneVertexInMoreThanS=false);
     DegeneracyAndOrdering getDegeneracyOrdering(int s=0, int k=0) const;
 
     std::vector<int> getAnyWalk(int vertex_start, unsigned int path_size_max) const;
@@ -133,9 +136,11 @@ class Graph {
     int degree(int v) const;
 
     int id_get(const int v) const;
+    int id_reverse_get(const int v) const;
     bool id_has() const;
 
     unsigned int n() const;
+    int n_signed() const;
     unsigned int m() const;
 
     static Graph parse_graph6(const std::string& g6);
@@ -198,8 +203,10 @@ class Graph {
     std::vector<std::vector<bool>> edges_matrix;
 #endif
 
-    // a map of vertex_id -> mapped vertex_id
+    // a map of vertex_id [0,H->n()] -> mapped vertex_id [0,G->n()] with H as this = subgraph
     std::vector<int> ids;
+    // a map of vertex_id [0,G->n()] -> mapped vertex_id [0,H->n()] with H as this = subgraph
+    std::vector<int> ids_reverse;
   private:
     unsigned int number_vertices;
     unsigned int number_edges;
